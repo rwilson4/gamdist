@@ -37,6 +37,21 @@ def test_logistic_regression():
     err = mu_test - mu_hat
     print 'MSE:', err.dot(err) / len(err) # MSE
 
+def test_logistic_regression_covariate_classes():
+    mdl = gam.GAM('binomial', name='test_logistic_regression')
+    mdl.add_feature(name='gender', type='categorical')
+    mdl.add_feature(name='country', type='categorical')
+
+    X, y, ccs = generate_covariate_class_data()
+    mdl.fit(X, y, covariate_class_sizes=ccs, verbose=True, plot_convergence=False, max_its=20)
+    mdl.summary()
+
+    # Get the "true" probabilities, ytest
+    Xtest, mu_test, ccs = generate_covariate_class_data(return_mean=True)
+    mu_hat =  mdl.predict(Xtest)
+    err = mu_test - mu_hat
+    print 'MSE:', err.dot(err) / len(err) # MSE
+
 def test_spline_regression():
     mdl = gam.GAM('normal', name='test_additive_regression')
     mdl.add_feature(name='hft', type='spline', rel_dof=9.)
@@ -66,7 +81,7 @@ def test_cross_validation():
 
             traini = np.append(ii[0:ia], ii[ib:num_training_examples])
             testi = ii[ia:ib]
-        
+
             Xtraini = X.iloc[traini, :]
             ytraini = y[traini]
             Xtesti = X.iloc[testi, :]
@@ -120,8 +135,8 @@ def _gaussian_family(mu):
     # so the signal to noise ratio is about 1.5.
     return mu + np.random.normal(size=mu.shape, loc=0.0, scale=np.sqrt(0.1))
 
-def _binomial_family(mu):
-    return np.random.binomial(1, p=mu)
+def _binomial_family(mu, ccs=1):
+    return np.random.binomial(ccs, p=mu)
 
 def gmu_purchases(x):
     return 0.1*np.log1p(x) + 0.3
@@ -161,7 +176,7 @@ def generate_data(num_obs, link=_identity_link, family=_gaussian_family, return_
     gmu += gmu_country(X['country'].values)
     if include_hft:
         gmu += gmu_hft(X['hft'].values)
-        
+
     mu = link(gmu)
     if return_mean:
         y = mu
@@ -169,6 +184,24 @@ def generate_data(num_obs, link=_identity_link, family=_gaussian_family, return_
         y = family(mu)
 
     return X, y
+
+def generate_covariate_class_data(return_mean=False):
+    X = pd.DataFrame(data={'gender': ['male', 'female', 'male', 'female', 'male', 'female'],
+                           'country': ['usa', 'usa', 'gbr', 'gbr', 'can', 'can']})
+
+    ccs = np.array([1000, 1400, 2200, 1300, 3200, 1700])
+
+    np.random.seed(3)
+    gmu = gmu_gender(X['gender'].values)
+    gmu += gmu_country(X['country'].values)
+    mu = _logit_link(gmu)
+    if return_mean:
+        y = mu
+    else:
+        y = _binomial_family(mu, ccs)
+
+    return X, y, ccs
+
 
 def generate_spline_data(num_obs):
     X = pd.DataFrame(data={'hft': np.random.random(size=num_obs)})
@@ -180,13 +213,17 @@ def generate_spline_data(num_obs):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('variety', choices=['linear', 'logistic', 'spline', 'additive', 'cv'], help='Thing to test.')
+    parser.add_argument('variety', choices=['linear', 'logistic',
+                                            'covariate', 'spline',
+                                            'additive', 'cv'], help='Thing to test.')
     args = parser.parse_args()
 
     if args.variety == 'linear':
         test_linear_regression()
     elif args.variety == 'logistic':
         test_logistic_regression()
+    elif args.variety == 'covariate':
+        test_logistic_regression_covariate_classes()
     elif args.variety == 'spline':
         test_spline_regression()
     elif args.variety == 'additive':

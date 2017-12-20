@@ -1,5 +1,5 @@
 # Passing untrusted user input may have unintended consequences.
-# Not designed to consume input from unknown sources (i.e., 
+# Not designed to consume input from unknown sources (i.e.,
 # the public internet).
 
 import sys
@@ -195,7 +195,9 @@ def _gamma_dispersion(dof, dev, num_obs):
         raise ValueError('Could not estimate gamma dispersion.')
 
 class GAM:
-    def __init__(self, family=None, link=None, dispersion=None, name=None, load_from_file=None):
+    def __init__(self, family=None, link=None, dispersion=None,
+                 estimate_overdispersion=True, name=None,
+                 load_from_file=None):
         """Generalized Additive Model
 
         This is the constructor for a Generalized Additive Model.
@@ -259,6 +261,11 @@ class GAM:
              typically unknown and must be estimated from the data.
              If the dispersion is known, it can be specified here which
              will reduce the uncertainty of the model.
+         estimate_overdispersion : boolean (optional)
+             Flag specifying whether to estimate over-dispersion for
+             Binomial and Poisson (not yet implemented) families. Is
+             only possible when covariate classes are present and have
+             at least modest size. See [GLM, S4.5] for details.
          name : str or None (optional)
              Name for model, to be used in plots and in saving files.
          load_from_file : str or None (optional)
@@ -274,6 +281,7 @@ class GAM:
         Returns
         -------
          mdl : Generalized Additive Model object
+
         """
 
         if load_from_file is not None:
@@ -328,6 +336,7 @@ class GAM:
             self._eval_link = lambda x: 1. / (x * x)
             self._eval_inv_link = lambda x: 1. / np.sqrt(x)
 
+        self._estimate_overdispersion = estimate_overdispersion
         self._features = {}
         self._offset = 0.0
         self._num_features = 0
@@ -512,7 +521,9 @@ class GAM:
         self._features[name] = f
         self._num_features += 1
 
-    def fit(self, X, y, weights=None, optimizer='admm', smoothing=1., save_flag=False, verbose=False, plot_convergence=False, max_its=100):
+    def fit(self, X, y, covariate_class_sizes=None, weights=None,
+            optimizer='admm', smoothing=1., save_flag=False,
+            verbose=False, plot_convergence=False, max_its=100):
         """Fit a Generalized Additive Model to data.
 
         Note regarding binomial families: many data sets include
@@ -550,6 +561,9 @@ class GAM:
              may need to be in a particular form (for example, for
              a binomial family, the y's should be either 0 or 1),
              but this is not checked anywhere!
+         covariate_class_sizes : array or None.
+             If observations are grouped into covariance classes, the
+             size of those classes should be listed in this input.
          w : array
              Weights applied to each observation. This is effectively
              specifying the dispersion of each observation.
@@ -607,11 +621,23 @@ class GAM:
 
         self._y = y.flatten()
         self._weights = weights
-        self._offset = self._eval_link(np.mean(self._y))
+
+        if covariate_class_sizes is not None:
+            self._has_covariate_classes = True
+            self._covariate_class_sizes = covariate_class_sizes
+            mean_response = float(np.sum(self._y)) / np.sum(self._covariate_class_sizes)
+            self._offset = self._eval_link(mean_response)
+        else:
+            self._has_covariate_classes = False
+            self._covariate_class_sizes = None
+            self._offset = self._eval_link(np.mean(self._y))
+
         self.fj = {}
 
         for name, feature in self._features.iteritems():
-            feature.initialize(X[name].values, smoothing=smoothing, save_flag=save_flag, save_prefix=self._name)
+            feature.initialize(X[name].values, smoothing=smoothing,
+                               covariate_class_sizes=self._covariate_class_sizes,
+                               save_flag=save_flag, save_prefix=self._name)
             self.fj[name] = np.zeros(self._num_obs)
 
         self.f_bar = np.full((self._num_obs,), self._offset / self._num_features)
@@ -686,7 +712,12 @@ class GAM:
             self.f_bar = f_new
             self.fj = self.fj_new
             self.z_bar = z_new
-            prim_tol = np.sqrt(self._num_obs * self._num_features) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
+            if self._has_covariate_classes:
+                prim_tol = np.sqrt(np.sum(self._covariate_class_sizes) * self._num_features) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
+
+            else:
+                prim_tol = np.sqrt(self._num_obs * self._num_features) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
+
             dual_tol = np.sqrt(num_params) * eps_abs + eps_rel * norm_aty
 
             self.prim_res.append(prim_res)
@@ -761,6 +792,10 @@ class GAM:
                 prox = po._prox_binomial_logit
             else:
                 prox = po._prox_binomial
+
+            if self._has_covariate_classes:
+                return (1. / N) * prox(N*upf, self._rho, self._y, self._covariate_class_sizes, self._weights, self._eval_inv_link, p)
+
         elif self._family == 'poisson':
             if self._link == 'log':
                 prox = po._prox_poisson_log
@@ -779,7 +814,7 @@ class GAM:
         else:
             raise ValueError('Family {0:s} and Link Function {1:s} not (yet) supported.'.format(self._family, self._link))
 
-        return (1. / N) * prox(N*upf, self._rho, self._y, self._weights, self._eval_inv_link, p)
+        return (1. / N) * prox(N*upf, self._rho, self._y, w=self._weights, inv_link=self._eval_inv_link, p=p)
 
     def predict(self, X):
         """Apply fitted model to features.
@@ -890,7 +925,7 @@ class GAM:
         """
         self._features[name]._plot(true_fn=true_fn)
 
-    def deviance(self, X=None, y=None, w=None):
+    def deviance(self, X=None, y=None, covariate_class_sizes=None, w=None):
         """Deviance
 
         This function works in one of two ways:
@@ -917,6 +952,8 @@ class GAM:
              Only applicable for the second use case described above.
          y : array (optional)
              Response. Only applicable for the second use case.
+         covariate_class_sizes : array (optional)
+             Array of covariate class sizes.
          w : array (optional)
              Weights for observations. Only applicable for the second
              use case, but optional even then.
@@ -930,8 +967,16 @@ class GAM:
             y = self._y
             mu = self._eval_inv_link(self._num_features * self.f_bar)
             w = self._weights
+            if self._has_covariate_classes:
+                m = self._covariate_class_sizes
+            else:
+                m = 1.
         else:
             mu = self.predict(X)
+            if covariate_class_sizes is None:
+                m = covariate_class_sizes
+            else:
+                m = 1.
 
         if self._family == 'normal':
             y_minus_mu = y - mu
@@ -941,9 +986,9 @@ class GAM:
                 return w.dot(y_minus_mu * y_minus_mu)
         elif self._family == 'binomial':
             if w is None:
-                return -2. * np.sum( y * np.log(mu) + (1. - y) * np.log1p(-mu) )
+                return -2. * np.sum( y * np.log(mu) + (m - y) * np.log1p(-mu) )
             else:
-                return -2. *  w.dot( y * np.log(mu) + (1. - y) * np.log1p(-mu) )
+                return -2. *  w.dot( y * np.log(mu) + (m - y) * np.log1p(-mu) )
         elif self._family == 'poisson':
             if w is None:
                 return 2. * np.sum(y * np.log(y / mu) - (y - mu))
@@ -998,7 +1043,12 @@ class GAM:
                 sigma2 = self.deviance() / (self._num_obs - self.dof())
                 return sigma2
         elif self._family == 'binomial':
-            return 1.
+            if self._estimate_overdispersion:
+                return self._overdispersion()
+            elif self._known_dispersion:
+                return self._dispersion
+            else:
+                return 1.
         elif self._family == 'poisson':
             return 1.
         elif self._family == 'gamma':
@@ -1016,6 +1066,25 @@ class GAM:
             else:
                 sigma2 = self.deviance() / (self._num_obs - self.dof())
                 return sigma2
+
+    def _overdispersion(self, formula=None):
+        """Over-Dispersion
+
+        """
+
+        has_replication = True
+        if formula is None:
+            if has_replication:
+                formula = 'replication'
+            else:
+                formula = 'pearson'
+
+        if not self._has_covariate_classes:
+            return 1.
+        elif formula == 'replication':
+            return 1.
+        else:
+            return 1.
 
     def dof(self):
         """Degrees of Freedom

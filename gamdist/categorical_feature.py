@@ -1,5 +1,5 @@
-# Passing untrusted user input may have unintended consequences. 
-# Not designed to consume input from unknown sources (i.e., 
+# Passing untrusted user input may have unintended consequences.
+# Not designed to consume input from unknown sources (i.e.,
 # the public internet).
 
 import sys
@@ -173,13 +173,18 @@ class _CategoricalFeature(_Feature):
                 self._has_prior = False
 
 
-    def initialize(self, x, smoothing=1.0, save_flag=False, save_prefix=None, na_signifier=None, verbose=False):
+    def initialize(self, x, covariate_class_sizes=None,
+                   smoothing=1.0, save_flag=False,
+                   save_prefix=None, na_signifier=None,
+                   verbose=False):
         """Initialize variables once data has been specified.
 
         Parameters
         ----------
         x : array
             Observation corresponding to this feature.
+        covariate_class_sizes : array
+            Size of covariate classes, if applicable.
         smoothing : float
             Overall smoothing factor, on top of the relative
             smoothing specified in __init__. Defaults to 1.0,
@@ -310,6 +315,11 @@ class _CategoricalFeature(_Feature):
         self._AtA = sparse.dia_matrix((cnt, 0), shape=(self._num_categories, self._num_categories), dtype=np.int)
         self.p = np.zeros(self._num_categories)
 
+        if covariate_class_sizes is None:
+            self._ccs = cnt
+        else:
+            self._ccs = self._compute_Atz(covariate_class_sizes)
+
         if self._verbose:
             print 'Number of categories: {0:d}'.format(self._num_categories)
             if self._has_edges:
@@ -405,8 +415,10 @@ class _CategoricalFeature(_Feature):
                       + \| diag(\lambda_1) * (q - q_prior) \|_1
                       + \| diag(\lambda_2)^(1/2) * (q - q_prior) \|_2^2
                       + \lambda_nl * \| D*q \|_1
-           s.t. 1' * A * q = 0
-        where b = \bar{f}^k + u^k - \bar{z}^k - A*q^k
+           s.t. ccs' * A * q = 0
+        where b = \bar{f}^k + u^k - \bar{z}^k - A*q^k, and ccs
+        is the vector of covariance class sizes. (In most
+        cases that will just be a vector of ones).
 
         Parameters
         ----------
@@ -463,7 +475,7 @@ class _CategoricalFeature(_Feature):
 
         obj = cvx.quad_form(q, AtA) + 2. * (Atb.T * q)
 
-        c = cvx.Constant(self._AtA.diagonal())
+        c = cvx.Constant(self._ccs)
         constraints = [c.T * q == 0]
 
         if self._has_l1:
