@@ -109,7 +109,8 @@ class _LinearFeature(_Feature):
                 self._has_prior = False
 
 
-    def initialize(self, x, smoothing=1.0, save_flag=False, save_prefix=None, verbose=False):
+    def initialize(self, x, smoothing=1.0, save_flag=False, save_prefix=None,
+                   verbose=False, covariate_class_sizes=None):
         """Initialize data associated with this feature.
 
         Completes the initialization of this feature based on the data

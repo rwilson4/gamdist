@@ -273,7 +273,8 @@ class _SplineFeature(_Feature):
 
         self._rel_dof = rel_dof
 
-    def initialize(self, x, smoothing=1.0, save_flag=False, save_prefix=None, verbose=False):
+    def initialize(self, x, smoothing=1.0, save_flag=False, save_prefix=None,
+                   verbose=False, covariate_class_sizes=None):
         """Initialize variables
 
         Parameters
@@ -404,13 +405,14 @@ class _SplineFeature(_Feature):
             self._cho_factor = la.cho_factor(A)
             self._c = np.mean(self._N, axis=0)
             self._w = la.cho_solve(self._cho_factor, self._c)
-            self._constant = 2. / (self._c.dot(self._w))
+            self._constant = 1. / (self._c.dot(self._w))
             self._computed_cho_factor = True
 
-        self._theta = la.cho_solve(self._cho_factor, Nty, check_finite=False)
+        theta_wc = la.cho_solve(self._cho_factor, Nty, check_finite=False)
         #self._theta = la.cho_solve(self._cho_factor, Nty, check_finite=False)
         # Enforce constraint that average prediction over the data is zero.
         # Only requires an addition O(K) operations
+        self._theta = theta_wc - self._constant * self._c.dot(theta_wc) * self._w
         #self._theta -= (self._constant * (self._w.dot(Nty))) * self._w
 
         if self._save_self:
