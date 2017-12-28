@@ -1,0 +1,5 @@
+2017-12-28 : Covariate classes and spline fix
+- Adding ability to use covariate classes with categorical variables
+  and binomial response.
+- Fixing spline normalization to have mean zero over the training
+  data.
