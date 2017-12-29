@@ -363,6 +363,12 @@ class GAM:
         self._name = name
 
     def _save(self):
+        """Save state.
+
+        Save the model to file to make predictions later, or continue
+        a fitting session.
+
+        """
         mv = {}
         mv['family'] = self._family
         mv['link'] = self._link
@@ -408,6 +414,11 @@ class GAM:
 
 
     def _load(self, filename):
+        """Load state.
+
+        Load a model from file to make predictions.
+
+        """
         f = open(filename)
         mv = pickle.load(f)
         f.close()
@@ -438,6 +449,7 @@ class GAM:
                 raise ValueError('Invalid feature type')
 
         # self._rho = mv['rho']
+        self._num_obs = mv['num_obs']
         self._y = mv['y']
         self._weights = mv['weights']
         self._has_covariate_classes = mv['has_covariate_classes']
@@ -757,9 +769,6 @@ class GAM:
             self.dual_tol.append(dual_tol)
             self.dev.append(self.deviance())
 
-            if save_flag:
-                self._save()
-
             if prim_res < prim_tol and dual_res < dual_tol:
                 if verbose:
                     print 'Fit converged'
@@ -773,6 +782,8 @@ class GAM:
             p.join()
 
         self._fitted = True
+        if save_flag:
+            self._save()
 
         if plot_convergence:
             _plot_convergence(self.prim_res, self.prim_tol, self.dual_res, self.dual_tol, self.dev)

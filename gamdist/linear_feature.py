@@ -180,9 +180,9 @@ class _LinearFeature(_Feature):
         if save_flag:
             self._save_self = True
             if save_prefix is None:
-                self._filename = '{0:s}.pkcl'.format(self._name)
+                self._filename = '{0:s}.pckl'.format(self._name)
             else:
-                self._filename = '{0:s}_{1:s}.pkcl'.format(save_prefix, self._name)
+                self._filename = '{0:s}_{1:s}.pckl'.format(save_prefix, self._name)
             self._save()
         else:
             self._filename = None
