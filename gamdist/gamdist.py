@@ -35,17 +35,17 @@ from .spline_feature import _SplineFeature
 import proximal_operators as po
 
 # To do:
-# - Save and load properly
-# - Implement Multinomial, Proportional Hazards
-# - Implement outlier detection
 # - Implement overdispersion for Binomial and Poisson families
-# - Hierarchical models
-# - AICc, BIC, R-squared estimate
-# - Confidence intervals on mu, predictions (probably need to use Bootstrap but can do so intelligently)
-# - Confidence intervals on model parameters, p-values
-# - Group lasso penalty (l2 norm -- not squared -- or l_\infty norm on f_j(x_j; p_j))
 # - Piecewise constant fits, total variation regularization
 # - Monotone constraint
+# - Hierarchical models
+# - Implement Multinomial, Proportional Hazards
+# - Implement outlier detection
+# - AICc, BIC, R-squared estimate
+# - Confidence intervals on mu, predictions (probably need to use Bootstrap but can
+#   do so intelligently)
+# - Confidence intervals on model parameters, p-values
+# - Group lasso penalty (l2 norm -- not squared -- or l_\infty norm on f_j(x_j; p_j))
 # - Interactions
 # - Runtime optimization (Cython)
 # - Fit in parallel
@@ -63,6 +63,7 @@ import proximal_operators as po
 # - Implement probit, complementary log-log links.
 # - Implement Binomial models for covariate classes
 # - Constrain spline to have mean prediction 0 over the data
+# - Save and load properly
 
 FAMILIES = ['normal',
             'binomial',
@@ -214,7 +215,7 @@ def _gamma_dispersion(dof, dev, num_obs):
 
 class GAM:
     def __init__(self, family=None, link=None, dispersion=None,
-                 estimate_overdispersion=True, name=None,
+                 estimate_overdispersion=False, name=None,
                  load_from_file=None):
         """Generalized Additive Model
 
@@ -222,7 +223,8 @@ class GAM:
 
         References
         ----------
-         [glmnet]   glmnet (R package): https://cran.r-project.org/web/packages/glmnet/index.html
+         [glmnet]   glmnet (R package):
+                    https://cran.r-project.org/web/packages/glmnet/index.html
                     This is the standard package for GAMs in R and was written by people
                     much smarter than I am!
          [pygam]    pygam (Python package): https://github.com/dswah/pyGAM
@@ -232,13 +234,13 @@ class GAM:
                     The standard text on GLMs.
          [GAM]      Generalized Additive Models; by Hastie and Tibshirani
                     The book by the folks who invented GAMs.
-         [ESL]      The Elements of Statistical Learning; by Hastie, Tibshirani, and Friedman
-                    Covers a lot more than just GAMs.
+         [ESL]      The Elements of Statistical Learning; by Hastie, Tibshirani, and
+                    Friedman. Covers a lot more than just GAMs.
          [GAMr]     Generalized Additive Models: an Introduction with R; by Wood.
                     Covers more implementation details than [GAM].
          [ADMM]     Distributed Optimization and Statistical Learning via the Alternating
-                    Direction Method of Multipliers; by Boyd, Parikh, Chu, Peleato, and Eckstein
-                    A mouthful, a work of genius.
+                    Direction Method of Multipliers; by Boyd, Parikh, Chu, Peleato, and
+                    Eckstein. A mouthful, a work of genius.
          [GAMADMM]  A Distributed Algorithm for Fitting Generalized Additive Models;
                     by Chu, Keshavarz, and Boyd
                     Forms the basis of our approach, the inspiration for this package!
@@ -283,7 +285,8 @@ class GAM:
              Flag specifying whether to estimate over-dispersion for
              Binomial and Poisson (not yet implemented) families. Is
              only possible when covariate classes are present and have
-             at least modest size. See [GLM, S4.5] for details.
+             at least modest size. See [GLM, S4.5] for
+             details. Defaults to False.
          name : str or None (optional)
              Name for model, to be used in plots and in saving files.
          load_from_file : str or None (optional)
@@ -324,12 +327,13 @@ class GAM:
         else:
             raise ValueError('{} link not supported'.format(link))
 
-        if self._family in FAMILIES_WITH_KNOWN_DISPERSIONS.keys():
-            self._known_dispersion = True
-            self._dispersion = FAMILIES_WITH_KNOWN_DISPERSIONS[self._family]
-        elif dispersion is not None:
+        if dispersion is not None:
             self._known_dispersion = True
             self._dispersion = dispersion
+        elif (self._family in FAMILIES_WITH_KNOWN_DISPERSIONS.keys()
+              and not estimate_overdispersion):
+            self._known_dispersion = True
+            self._dispersion = FAMILIES_WITH_KNOWN_DISPERSIONS[self._family]
         else:
             self._known_dispersion = False
 
@@ -340,7 +344,8 @@ class GAM:
             self._eval_link = lambda x: np.log( x / (1. - x) )
             self._eval_inv_link = lambda x: np.exp(x) / (1 + np.exp(x))
         elif self._link == 'probit':
-            self._eval_link = lambda x: stats.norm.ppf(x) # Inverse CDF of the Gaussian distribution
+            # Inverse CDF of the Gaussian distribution
+            self._eval_link = lambda x: stats.norm.ppf(x)
             self._eval_inv_link = lambda x: stats.norm.cdf(x)
         elif self._link == 'complementary_log_log':
             self._eval_link = lambda x: np.log(-np.log(1. - x))
@@ -472,7 +477,8 @@ class GAM:
             self._eval_link = lambda x: np.log( x / (1. - x) )
             self._eval_inv_link = lambda x: np.exp(x) / (1 + np.exp(x))
         elif self._link == 'probit':
-            self._eval_link = lambda x: stats.norm.ppf(x) # Inverse CDF of the Gaussian distribution
+            # Inverse CDF of the Gaussian distribution
+            self._eval_link = lambda x: stats.norm.ppf(x)
             self._eval_inv_link = lambda x: stats.norm.cdf(x)
         elif self._link == 'complementary_log_log':
             self._eval_link = lambda x: np.log(-np.log(1. - x))
@@ -572,8 +578,8 @@ class GAM:
         Note regarding binomial families: many data sets include
         multiple observations having identical features. For example,
         imagine a data set with features 'gender', and 'country' and
-        binary response indicating whether the person died (morbid
-        but common in biostatistics). The data might look like this:
+        binary response indicating whether the person died (morbid but
+        common in biostatistics). The data might look like this:
 
            gender   country   patients   survivors
              M        USA       50           48
@@ -647,7 +653,9 @@ class GAM:
 
         """
         if save_flag and self._name is None:
-            raise ValueError('Cannot save a GAM with no name. Specify name when instantiating model.')
+            msg = 'Cannot save a GAM with no name.'
+            msg += ' Specify name when instantiating model.'
+            raise ValueError(msg)
 
         if len(X) != len(y):
             raise ValueError('Inconsistent number of observations in X and y.')
@@ -739,7 +747,9 @@ class GAM:
             norm_aty = 0.0
             num_params = 0
             for name, feature in self._features.iteritems():
-                dr = (fj_new[name] - fj[name]) + (z_new - self.z_bar) - (f_new - self.f_bar)
+                dr = ((fj_new[name] - fj[name])
+                      + (z_new - self.z_bar)
+                      - (f_new - self.f_bar))
                 dual_res += dr.dot(dr)
                 norm_ax += fj_new[name].dot(fj_new[name])
                 zik = fj_new[name] + z_new - f_new
@@ -756,10 +766,13 @@ class GAM:
             fj = fj_new
             self.z_bar = z_new
             if self._has_covariate_classes:
-                prim_tol = np.sqrt(np.sum(self._covariate_class_sizes) * self._num_features) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
+                sccs = np.sum(self._covariate_class_sizes)
+                prim_tol = (np.sqrt(sccs * self._num_features) * eps_abs
+                            + eps_rel * np.max([norm_ax, norm_bz]))
 
             else:
-                prim_tol = np.sqrt(self._num_obs * self._num_features) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
+                prim_tol = (np.sqrt(self._num_obs * self._num_features) * eps_abs
+                            + eps_rel * np.max([norm_ax, norm_bz]))
 
             dual_tol = np.sqrt(num_params) * eps_abs + eps_rel * norm_aty
 
@@ -786,7 +799,8 @@ class GAM:
             self._save()
 
         if plot_convergence:
-            _plot_convergence(self.prim_res, self.prim_tol, self.dual_res, self.dual_tol, self.dev)
+            _plot_convergence(self.prim_res, self.prim_tol, self.dual_res,
+                              self.dual_tol, self.dev)
 
     def _optimize(self, upf, N, p=None):
         """Optimize \bar{z}.
@@ -839,7 +853,9 @@ class GAM:
                 prox = po._prox_binomial
 
             if self._has_covariate_classes:
-                return (1. / N) * prox(N*upf, self._rho, self._y, self._covariate_class_sizes, self._weights, self._eval_inv_link, p=p)
+                return (1. / N) * prox(N*upf, self._rho, self._y,
+                                       self._covariate_class_sizes,
+                                       self._weights, self._eval_inv_link, p=p)
 
         elif self._family == 'poisson':
             if self._link == 'log':
@@ -857,9 +873,11 @@ class GAM:
             else:
                 prox = po._prox_inv_gaussian
         else:
-            raise ValueError('Family {0:s} and Link Function {1:s} not (yet) supported.'.format(self._family, self._link))
+            msg = 'Family {0:s} and Link Function {1:s} not (yet) supported.'
+            raise ValueError(msg.format(self._family, self._link))
 
-        return (1. / N) * prox(N*upf, self._rho, self._y, w=self._weights, inv_link=self._eval_inv_link, p=p)
+        return (1. / N) * prox(N*upf, self._rho, self._y, w=self._weights,
+                               inv_link=self._eval_inv_link, p=p)
 
     def predict(self, X):
         """Apply fitted model to features.
@@ -1160,10 +1178,11 @@ class GAM:
             # add one to the DOF.
             p += 1
 
-        # Note that the deviance is twice the dispersion times the log-likelihood, so no factor
-        # of two required there.
+        # Note that the deviance is twice the dispersion times the
+        # log-likelihood, so no factor of two required there.
         return self.deviance() / self.dispersion() + 2. * p
-        #return self.deviance() / self._num_obs + 2. * p * self.dispersion() / self._num_obs
+        # return (self.deviance() / self._num_obs
+        #          + 2. * p * self.dispersion() / self._num_obs)
 
     def aicc(self):
         # Eqn 6.32 on p. 304 of [GAMr]
@@ -1193,7 +1212,8 @@ class GAM:
         to force smoother fits by exaggerating the effective degrees of
         freedom. In that case, a value of gamma > 1. may be desirable.
         """
-        return self._num_obs * self.deviance() / ((self._num_obs - gamma * self.dof()) ** 2.)
+        denom = self._num_obs - gamma * self.dof()
+        return self._num_obs * self.deviance() / (denom * denom)
 
     def summary(self):
         """Print summary statistics associated with fitted model.

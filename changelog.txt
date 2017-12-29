@@ -3,3 +3,7 @@
   and binomial response.
 - Fixing spline normalization to have mean zero over the training
   data.
+
+2017-12-29 : Save/Load
+- Added ability to save models after fitting has completed and load
+  them for subsequent predictions.
