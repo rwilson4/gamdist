@@ -274,6 +274,7 @@ def _determine_smoothing(NtN, Omega, dof, lmbdaLow=0, lmbdaHigh=1, tolerance=1e-
 
 class _SplineFeature(_Feature):
     def __init__(self, name=None, transform=None, rel_dof=4.0, load_from_file=None):
+        self.__type__ = 'spline'
         if load_from_file is not None:
             self._load(load_from_file)
             return
@@ -337,9 +338,9 @@ class _SplineFeature(_Feature):
         if save_flag:
             self._save_self = True
             if save_prefix is None:
-                self._filename = '{0:s}.pkcl'.format(self._name)
+                self._filename = '{0:s}.pckl'.format(self._name)
             else:
-                self._filename = '{0:s}_{1:s}.pkcl'.format(save_prefix, self._name)
+                self._filename = '{0:s}_{1:s}.pckl'.format(save_prefix, self._name)
             self._save()
         else:
             self._filename = None
@@ -349,6 +350,9 @@ class _SplineFeature(_Feature):
         """Save parameters so model fitting can be continued later."""
         mv = {}
         mv['name'] = self._name
+        mv['has_transform'] = self._has_transform
+        if self._has_transform:
+            mv['transform'] = self._transform
         mv['rel_dof'] = self._rel_dof
         mv['x'] = self._x
         mv['num_obs'] = self._num_obs
@@ -377,6 +381,9 @@ class _SplineFeature(_Feature):
 
         self._filename = filename
         self._name = mv['name']
+        self._has_transform = mv['has_transform']
+        if self._has_transform:
+            self._transform = mv['transform']
         self._rel_dof = mv['rel_dof']
         self._x = mv['x']
         self._num_obs = mv['num_obs']

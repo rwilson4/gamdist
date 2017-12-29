@@ -1,5 +1,5 @@
 # Copyright 2017 Match Group, LLC
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License. You may
 # obtain a copy of the License at
@@ -128,6 +128,7 @@ class _CategoricalFeature(_Feature):
             Solver to use with CVXPY. Defaults to 'ECOS'.
         """
 
+        self.__type__ = 'categorical'
         if load_from_file is not None:
             self._load(load_from_file)
             return
@@ -143,6 +144,7 @@ class _CategoricalFeature(_Feature):
         self._has_l1 = False
         self._has_l2 = False
         self._has_network_lasso = False
+        self._has_prior = False
         if regularization is not None:
             if 'l1' in regularization:
                 self._has_l1 = True
@@ -187,9 +189,6 @@ class _CategoricalFeature(_Feature):
             if (self._has_l1 or self._has_l2) and 'prior' in regularization:
                 self._has_prior = True
                 self._prior = regularization['prior']
-            else:
-                self._has_prior = False
-
 
     def initialize(self, x, covariate_class_sizes=None,
                    smoothing=1.0, save_flag=False,
@@ -346,9 +345,9 @@ class _CategoricalFeature(_Feature):
         if save_flag:
             self._save_self = True
             if save_prefix is None:
-                self._filename = '{0:s}.pkcl'.format(self._name)
+                self._filename = '{0:s}.pckl'.format(self._name)
             else:
-                self._filename = '{0:s}_{1:s}.pkcl'.format(save_prefix, self._name)
+                self._filename = '{0:s}_{1:s}.pckl'.format(save_prefix, self._name)
             self._save()
         else:
             self._filename = None
@@ -362,11 +361,14 @@ class _CategoricalFeature(_Feature):
         mv['categories'] = self._categories
         mv['num_categories'] = self._num_categories
         mv['category_hash'] = self._category_hash
+
         mv['has_l1'] = self._has_l1
         if self._has_l1:
+            mv['coef1'] = self._coef1
             mv['lambda1'] = self._lambda1
         mv['has_l2'] = self._has_l2
         if self._has_l2:
+            mv['coef2'] = self._coef2
             mv['lambda2'] = self._lambda2
         mv['has_network_lasso'] = self._has_network_lasso
         if self._has_network_lasso:
@@ -376,6 +378,7 @@ class _CategoricalFeature(_Feature):
         mv['has_prior'] = self._has_prior
         if self._has_prior:
             mv['prior'] = self._prior
+
         mv['na_index'] = self._na_index
         mv['x'] = self.x
         mv['p'] = self.p
