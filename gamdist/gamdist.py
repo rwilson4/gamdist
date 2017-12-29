@@ -1,5 +1,5 @@
 # Copyright 2017 Match Group, LLC
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License. You may
 # obtain a copy of the License at
@@ -37,14 +37,12 @@ import proximal_operators as po
 # To do:
 # - Save and load properly
 # - Implement Multinomial, Proportional Hazards
-# - Implement Binomial models for covariate classes
 # - Implement outlier detection
 # - Implement overdispersion for Binomial and Poisson families
 # - Hierarchical models
 # - AICc, BIC, R-squared estimate
 # - Confidence intervals on mu, predictions (probably need to use Bootstrap but can do so intelligently)
 # - Confidence intervals on model parameters, p-values
-# - Constrain spline to have mean prediction 0 over the data
 # - Group lasso penalty (l2 norm -- not squared -- or l_\infty norm on f_j(x_j; p_j))
 # - Piecewise constant fits, total variation regularization
 # - Monotone constraint
@@ -63,6 +61,8 @@ import proximal_operators as po
 # - Write documentation
 # - Check implementation of Gamma dispersion
 # - Implement probit, complementary log-log links.
+# - Implement Binomial models for covariate classes
+# - Constrain spline to have mean prediction 0 over the data
 
 FAMILIES = ['normal',
             'binomial',
@@ -304,6 +304,7 @@ class GAM:
 
         if load_from_file is not None:
             self._load(load_from_file)
+            return
 
         if family is None:
             raise ValueError('Family not specified.')
@@ -369,6 +370,7 @@ class GAM:
         if self._known_dispersion:
             mv['dispersion'] = self._dispersion
 
+        mv['estimate_overdispersion'] = self._estimate_overdispersion
         mv['offset'] = self._offset
         mv['num_features'] = self._num_features
         mv['fitted'] = self._fitted
@@ -376,20 +378,20 @@ class GAM:
 
         features = {}
         for name, feature in self._features.iteritems():
-            if type(feature) == _CategoricalFeature:
-                _type = 'categorical'
-            elif type(feature) == _LinearFeature:
-                _type = 'linear'
-            elif type(feature) == _SplineFeature:
-                _type = 'spline'
-            else:
-                raise ValueError('Invalid feature type')
-
-            features[name] = {'type': _type,
+            features[name] = {'type': feature.__type__,
                               'filename': feature._filename
                               }
 
         mv['features'] = features
+
+        # mv['rho'] = self._rho
+        mv['num_obs'] = self._num_obs
+        mv['y'] = self._y
+        mv['weights'] = self._weights
+        mv['has_covariate_classes'] = self._has_covariate_classes
+        if self._has_covariate_classes:
+            mv['covariate_class_sizes'] = self._covariate_class_sizes
+
         mv['f_bar'] = self.f_bar
         mv['z_bar'] = self.z_bar
         mv['u'] = self.u
@@ -397,8 +399,10 @@ class GAM:
         mv['dual_res'] = self.dual_res
         mv['prim_tol'] = self.prim_tol
         mv['dual_tol'] = self.dual_tol
+        mv['dev'] = self.dev
 
-        f = open(self._filename, 'w')
+        filename = '{0:s}_model.pckl'.format(self._name)
+        f = open(filename, 'w')
         pickle.dump(mv, f)
         f.close()
 
@@ -415,6 +419,7 @@ class GAM:
         if self._known_dispersion:
             self._dispersion = mv['dispersion']
 
+        self._estimate_overdispersion = mv['estimate_overdispersion']
         self._offset = mv['offset']
         self._num_features = mv['num_features']
         self._fitted = mv['fitted']
@@ -432,6 +437,13 @@ class GAM:
             else:
                 raise ValueError('Invalid feature type')
 
+        # self._rho = mv['rho']
+        self._y = mv['y']
+        self._weights = mv['weights']
+        self._has_covariate_classes = mv['has_covariate_classes']
+        if self._has_covariate_classes:
+            self._covariate_class_sizes = mv['covariate_class_sizes']
+
         self.f_bar = mv['f_bar']
         self.z_bar = mv['z_bar']
         self.u = mv['u']
@@ -439,6 +451,7 @@ class GAM:
         self.dual_res = mv['dual_res']
         self.prim_tol = mv['prim_tol']
         self.dual_tol = mv['dual_tol']
+        self.dev = mv['dev']
 
         if self._link == 'identity':
             self._eval_link = lambda x: x
@@ -650,13 +663,13 @@ class GAM:
             self._covariate_class_sizes = None
             self._offset = self._eval_link(np.mean(self._y))
 
-        self.fj = {}
+        fj = {}
 
         for name, feature in self._features.iteritems():
             feature.initialize(X[name].values, smoothing=smoothing,
                                covariate_class_sizes=self._covariate_class_sizes,
                                save_flag=save_flag, save_prefix=self._name)
-            self.fj[name] = np.zeros(self._num_obs)
+            fj[name] = np.zeros(self._num_obs)
 
         self.f_bar = np.full((self._num_obs,), self._offset / self._num_features)
         self.z_bar = np.zeros(self._num_obs)
@@ -680,7 +693,7 @@ class GAM:
                 print 'Optimizing primal variables'
 
             fpumz = self._num_features * (self.f_bar + self.u - self.z_bar)
-            self.fj_new = {}
+            fj_new = {}
             f_new = np.full((self._num_obs,), self._offset)
             if False: #num_threads > 1:
                 # Getting python to run a for loop in parallel
@@ -688,15 +701,15 @@ class GAM:
                 args = [(i, self._features[i], fpumz, self._rho) for i in self._features.keys()]
                 results = p.map(_feature_wrapper, args)
                 for i in results:
-                    self.fj_new[i[0]] = i[1]
+                    fj_new[i[0]] = i[1]
                     f_new += i[1]
 
             else:
                 for name, feature in self._features.iteritems():
                     if verbose:
                           print 'Optimizing {0:s}'.format(name)
-                    self.fj_new[name] = feature.optimize(fpumz, self._rho)
-                    f_new += self.fj_new[name]
+                    fj_new[name] = feature.optimize(fpumz, self._rho)
+                    f_new += fj_new[name]
 
             f_new /= self._num_features
 
@@ -714,10 +727,10 @@ class GAM:
             norm_aty = 0.0
             num_params = 0
             for name, feature in self._features.iteritems():
-                dr = (self.fj_new[name] - self.fj[name]) + (z_new - self.z_bar) - (f_new - self.f_bar)
+                dr = (fj_new[name] - fj[name]) + (z_new - self.z_bar) - (f_new - self.f_bar)
                 dual_res += dr.dot(dr)
-                norm_ax += self.fj_new[name].dot(self.fj_new[name])
-                zik = self.fj_new[name] + z_new - f_new
+                norm_ax += fj_new[name].dot(fj_new[name])
+                zik = fj_new[name] + z_new - f_new
                 norm_bz += zik.dot(zik)
                 norm_aty += feature.compute_dual_tol(self.u)
                 num_params += feature.num_params()
@@ -728,7 +741,7 @@ class GAM:
             norm_aty = np.sqrt(norm_aty)
 
             self.f_bar = f_new
-            self.fj = self.fj_new
+            fj = fj_new
             self.z_bar = z_new
             if self._has_covariate_classes:
                 prim_tol = np.sqrt(np.sum(self._covariate_class_sizes) * self._num_features) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
@@ -743,6 +756,9 @@ class GAM:
             self.prim_tol.append(prim_tol)
             self.dual_tol.append(dual_tol)
             self.dev.append(self.deviance())
+
+            if save_flag:
+                self._save()
 
             if prim_res < prim_tol and dual_res < dual_tol:
                 if verbose:
@@ -812,7 +828,7 @@ class GAM:
                 prox = po._prox_binomial
 
             if self._has_covariate_classes:
-                return (1. / N) * prox(N*upf, self._rho, self._y, self._covariate_class_sizes, self._weights, self._eval_inv_link, p)
+                return (1. / N) * prox(N*upf, self._rho, self._y, self._covariate_class_sizes, self._weights, self._eval_inv_link, p=p)
 
         elif self._family == 'poisson':
             if self._link == 'log':
@@ -1218,37 +1234,3 @@ class GAM:
 
         for name, feature in self._features.iteritems():
             print feature.__str__()
-
-
-    def _save(self):
-        '''Save state.'''
-        mv = {}
-        mv['f'] = self.f_bar
-        mv['z'] = self.z_bar
-        mv['u'] = self.u
-        mv['prim_res'] = self.prim_res
-        mv['dual_res'] = self.dual_res
-        mv['prim_tol'] = self.prim_tol
-        mv['dual_tol'] = self.dual_tol
-        mv['name'] = self._name
-        mv['save_self'] = self._save_self
-
-        f = open('{0:s}.pckl'.format(self._name), 'w')
-        pickle.dump(mv, f)
-        f.close()
-
-    def _load(self, filename):
-        '''Load parameters from a previous model fitting session.'''
-        f = open(filename)
-        mv = pickle.load(f)
-        f.close()
-
-        self.f_bar = mv['f']
-        self.z_bar = mv['z']
-        self.u = mv['u']
-        self.prim_res = mv['prim_res']
-        self.dual_res = mv['dual_res']
-        self.prim_tol = mv['prim_tol']
-        self.dual_tol = mv['dual_tol']
-        self._name = mv['name']
-        self._save_self = mv['save_self']

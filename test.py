@@ -13,7 +13,7 @@ def test_linear_regression():
     mdl.add_feature(name='country', type='categorical')
 
     X, y = generate_data(1000)
-    mdl.fit(X, y, verbose=False, plot_convergence=True)
+    mdl.fit(X, y, verbose=False, plot_convergence=True, save_flag=True)
     mdl.summary()
 
     Xtest, ytest = generate_data(100)

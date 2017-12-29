@@ -1,5 +1,5 @@
 # Copyright 2017 Match Group, LLC
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License. You may
 # obtain a copy of the License at
@@ -20,6 +20,7 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
+import pickle
 import numpy as np
 from .feature import _Feature
 
@@ -88,6 +89,7 @@ class _LinearFeature(_Feature):
 
         """
 
+        self.__type__ = 'linear'
         if load_from_file is not None:
             self._load(load_from_file)
             return
@@ -105,6 +107,7 @@ class _LinearFeature(_Feature):
 
         self._has_l1 = False
         self._has_l2 = False
+        self._has_prior = False
         if regularization is not None:
             if 'l1' in regularization:
                 self._has_l1 = True
@@ -123,8 +126,6 @@ class _LinearFeature(_Feature):
             if (self._has_l1 or self._has_l2):
                 self._has_prior = True
                 self._prior = regularization.get('prior', 0.0)
-            else:
-                self._has_prior = False
 
 
     def initialize(self, x, smoothing=1.0, save_flag=False, save_prefix=None,
@@ -175,6 +176,7 @@ class _LinearFeature(_Feature):
         if self._has_l2:
             self._lambda2 = self._coef2 * smoothing
 
+        self._verbose = verbose
         if save_flag:
             self._save_self = True
             if save_prefix is None:
@@ -189,23 +191,31 @@ class _LinearFeature(_Feature):
     def _save(self):
         """Save parameters so model fitting can be continued later."""
         mv = {}
+        mv['has_transform'] = self._has_transform
+        if self._has_transform:
+            mv['transform'] = self._transform
+
+        mv['has_l1'] = self._has_l1
+        if self._has_l1:
+            mv['coef1'] = self._coef1
+            mv['lambda1'] = self._lambda1
+        mv['has_l2'] = self._has_l2
+        if self._has_l2:
+            mv['coef2'] = self._coef2
+            mv['lambda2'] = self._lambda2
+        mv['has_prior'] = self._has_prior
+        if self._has_prior:
+            mv['prior'] = self._prior
+
+        mv['verbose'] = self._verbose
+        mv['name'] = self._name
+        mv['save_self'] = self._save_self
+
         mv['xmean'] = self._xmean
         mv['x'] = self._x
         mv['xtx'] = self._xtx
         mv['m'] = self._m
         mv['b'] = self._b
-        mv['has_l1'] = self._has_l1
-        if self._has_l1:
-            mv['lambda1'] = self._lambda1
-        mv['has_l2'] = self._has_l2
-        if self._has_l2:
-            mv['lambda2'] = self._lambda2
-        mv['has_prior'] = self._has_prior
-        if self._has_prior:
-            mv['prior'] = self._prior
-        mv['verbose'] = self._verbose
-        mv['name'] = self._name
-        mv['save_self'] = self._save_self
 
         f = open(self._filename, 'w')
         pickle.dump(mv, f)
@@ -218,23 +228,32 @@ class _LinearFeature(_Feature):
         f.close()
 
         self._filename = filename
+
+        self._has_transform = mv['has_transform']
+        if self._has_transform:
+            self._transform = mv['transform']
+
+        self._has_l1 = mv['has_l1']
+        if self._has_l1:
+            self._coef1 = mv['coef1']
+            self._lambda1 = mv['lambda1']
+        self._has_l2 = mv['has_l2']
+        if self._has_l2:
+            self._coef2 = mv['coef2']
+            self._lambda2 = mv['lambda2']
+        self._has_prior = mv['has_prior']
+        if self._has_prior:
+            self._prior = mv['prior']
+
+        self._verbose = mv['verbose']
+        self._name = mv['name']
+        self._save_self = mv['save_self']
+
         self._xmean = mv['xmean']
         self._x = mv['x']
         self._xtx = mv['xtx']
         self._m = mv['m']
         self._b = mv['b']
-        self._has_l1 = mv['has_l1']
-        if self._has_l1:
-            self._lambda1 = mv['lambda1']
-        self._has_l2 = mv['has_l2']
-        if self._has_l2:
-            self._lambda2 = mv['lambda2']
-        self._has_prior = mv['has_prior']
-        if self._has_prior:
-            self._prior = mv['prior']
-        self._verbose = mv['verbose']
-        self._name = mv['name']
-        self._save_self = mv['save_self']
 
     def optimize(self, fpumz, rho):
         """Optimize this Feature's parameters.

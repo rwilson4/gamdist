@@ -274,6 +274,7 @@ def _determine_smoothing(NtN, Omega, dof, lmbdaLow=0, lmbdaHigh=1, tolerance=1e-
 
 class _SplineFeature(_Feature):
     def __init__(self, name=None, transform=None, rel_dof=4.0, load_from_file=None):
+        self.__type__ = 'spline'
         if load_from_file is not None:
             self._load(load_from_file)
             return
