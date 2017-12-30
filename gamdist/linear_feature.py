@@ -25,7 +25,8 @@ import numpy as np
 from .feature import _Feature
 
 class _LinearFeature(_Feature):
-    def __init__(self, name=None, transform=None, regularization=None, load_from_file=None):
+    def __init__(self, name=None, transform=None, regularization=None,
+                 load_from_file=None):
         """Initialize feature model (independent of data).
 
         This function is called when the user adds a feature to a
@@ -114,14 +115,16 @@ class _LinearFeature(_Feature):
                 if 'coef' in regularization['l1']:
                     self._coef1 = regularization['l1']['coef']
                 else:
-                    raise ValueError('No coefficient specified for l1 regularization term.')
+                    msg = 'No coefficient specified for l1 regularization term.'
+                    raise ValueError(msg)
 
             if 'l2' in regularization:
                 self._has_l2 = True
                 if 'coef' in regularization['l2']:
                     self._coef2 = regularization['l2']['coef']
                 else:
-                    raise ValueError('No coefficient specified for l2 regularization term.')
+                    msg = 'No coefficient specified for l2 regularization term.'
+                    raise ValueError(msg)
 
             if (self._has_l1 or self._has_l2):
                 self._has_prior = True
@@ -328,7 +331,8 @@ class _LinearFeature(_Feature):
         """
         ybar = np.sum(y)
         xty = self._x.dot(y)
-        return (xty + 2 * self._xmean * ybar) * xty  + (1. + self._xmean * self._xmean) * ybar * ybar
+        return ((xty + 2 * self._xmean * ybar) * xty
+                + (1. + self._xmean * self._xmean) * ybar * ybar)
 
     def num_params(self):
         """Number of parameters.

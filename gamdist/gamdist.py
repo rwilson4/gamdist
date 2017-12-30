@@ -35,17 +35,17 @@ from .spline_feature import _SplineFeature
 import proximal_operators as po
 
 # To do:
-# - Save and load properly
-# - Implement Multinomial, Proportional Hazards
-# - Implement outlier detection
-# - Implement overdispersion for Binomial and Poisson families
 # - Hierarchical models
-# - AICc, BIC, R-squared estimate
-# - Confidence intervals on mu, predictions (probably need to use Bootstrap but can do so intelligently)
-# - Confidence intervals on model parameters, p-values
-# - Group lasso penalty (l2 norm -- not squared -- or l_\infty norm on f_j(x_j; p_j))
 # - Piecewise constant fits, total variation regularization
 # - Monotone constraint
+# - Implement overdispersion for Poisson family
+# - Implement Multinomial, Proportional Hazards
+# - Implement outlier detection
+# - AICc, BIC, R-squared estimate
+# - Confidence intervals on mu, predictions (probably need to use Bootstrap but can
+#   do so intelligently)
+# - Confidence intervals on model parameters, p-values
+# - Group lasso penalty (l2 norm -- not squared -- or l_\infty norm on f_j(x_j; p_j))
 # - Interactions
 # - Runtime optimization (Cython)
 # - Fit in parallel
@@ -63,6 +63,8 @@ import proximal_operators as po
 # - Implement probit, complementary log-log links.
 # - Implement Binomial models for covariate classes
 # - Constrain spline to have mean prediction 0 over the data
+# - Save and load properly
+# - Implement overdispersion for Binomial family
 
 FAMILIES = ['normal',
             'binomial',
@@ -214,7 +216,7 @@ def _gamma_dispersion(dof, dev, num_obs):
 
 class GAM:
     def __init__(self, family=None, link=None, dispersion=None,
-                 estimate_overdispersion=True, name=None,
+                 estimate_overdispersion=False, name=None,
                  load_from_file=None):
         """Generalized Additive Model
 
@@ -222,7 +224,8 @@ class GAM:
 
         References
         ----------
-         [glmnet]   glmnet (R package): https://cran.r-project.org/web/packages/glmnet/index.html
+         [glmnet]   glmnet (R package):
+                    https://cran.r-project.org/web/packages/glmnet/index.html
                     This is the standard package for GAMs in R and was written by people
                     much smarter than I am!
          [pygam]    pygam (Python package): https://github.com/dswah/pyGAM
@@ -232,13 +235,13 @@ class GAM:
                     The standard text on GLMs.
          [GAM]      Generalized Additive Models; by Hastie and Tibshirani
                     The book by the folks who invented GAMs.
-         [ESL]      The Elements of Statistical Learning; by Hastie, Tibshirani, and Friedman
-                    Covers a lot more than just GAMs.
+         [ESL]      The Elements of Statistical Learning; by Hastie, Tibshirani, and
+                    Friedman. Covers a lot more than just GAMs.
          [GAMr]     Generalized Additive Models: an Introduction with R; by Wood.
                     Covers more implementation details than [GAM].
          [ADMM]     Distributed Optimization and Statistical Learning via the Alternating
-                    Direction Method of Multipliers; by Boyd, Parikh, Chu, Peleato, and Eckstein
-                    A mouthful, a work of genius.
+                    Direction Method of Multipliers; by Boyd, Parikh, Chu, Peleato, and
+                    Eckstein. A mouthful, a work of genius.
          [GAMADMM]  A Distributed Algorithm for Fitting Generalized Additive Models;
                     by Chu, Keshavarz, and Boyd
                     Forms the basis of our approach, the inspiration for this package!
@@ -283,7 +286,8 @@ class GAM:
              Flag specifying whether to estimate over-dispersion for
              Binomial and Poisson (not yet implemented) families. Is
              only possible when covariate classes are present and have
-             at least modest size. See [GLM, S4.5] for details.
+             at least modest size. See [GLM, S4.5] for
+             details. Defaults to False.
          name : str or None (optional)
              Name for model, to be used in plots and in saving files.
          load_from_file : str or None (optional)
@@ -324,12 +328,13 @@ class GAM:
         else:
             raise ValueError('{} link not supported'.format(link))
 
-        if self._family in FAMILIES_WITH_KNOWN_DISPERSIONS.keys():
-            self._known_dispersion = True
-            self._dispersion = FAMILIES_WITH_KNOWN_DISPERSIONS[self._family]
-        elif dispersion is not None:
+        if dispersion is not None:
             self._known_dispersion = True
             self._dispersion = dispersion
+        elif (self._family in FAMILIES_WITH_KNOWN_DISPERSIONS.keys()
+              and not estimate_overdispersion):
+            self._known_dispersion = True
+            self._dispersion = FAMILIES_WITH_KNOWN_DISPERSIONS[self._family]
         else:
             self._known_dispersion = False
 
@@ -340,7 +345,8 @@ class GAM:
             self._eval_link = lambda x: np.log( x / (1. - x) )
             self._eval_inv_link = lambda x: np.exp(x) / (1 + np.exp(x))
         elif self._link == 'probit':
-            self._eval_link = lambda x: stats.norm.ppf(x) # Inverse CDF of the Gaussian distribution
+            # Inverse CDF of the Gaussian distribution
+            self._eval_link = lambda x: stats.norm.ppf(x)
             self._eval_inv_link = lambda x: stats.norm.cdf(x)
         elif self._link == 'complementary_log_log':
             self._eval_link = lambda x: np.log(-np.log(1. - x))
@@ -472,7 +478,8 @@ class GAM:
             self._eval_link = lambda x: np.log( x / (1. - x) )
             self._eval_inv_link = lambda x: np.exp(x) / (1 + np.exp(x))
         elif self._link == 'probit':
-            self._eval_link = lambda x: stats.norm.ppf(x) # Inverse CDF of the Gaussian distribution
+            # Inverse CDF of the Gaussian distribution
+            self._eval_link = lambda x: stats.norm.ppf(x)
             self._eval_inv_link = lambda x: stats.norm.cdf(x)
         elif self._link == 'complementary_log_log':
             self._eval_link = lambda x: np.log(-np.log(1. - x))
@@ -572,8 +579,8 @@ class GAM:
         Note regarding binomial families: many data sets include
         multiple observations having identical features. For example,
         imagine a data set with features 'gender', and 'country' and
-        binary response indicating whether the person died (morbid
-        but common in biostatistics). The data might look like this:
+        binary response indicating whether the person died (morbid but
+        common in biostatistics). The data might look like this:
 
            gender   country   patients   survivors
              M        USA       50           48
@@ -647,7 +654,9 @@ class GAM:
 
         """
         if save_flag and self._name is None:
-            raise ValueError('Cannot save a GAM with no name. Specify name when instantiating model.')
+            msg = 'Cannot save a GAM with no name.'
+            msg += ' Specify name when instantiating model.'
+            raise ValueError(msg)
 
         if len(X) != len(y):
             raise ValueError('Inconsistent number of observations in X and y.')
@@ -739,7 +748,9 @@ class GAM:
             norm_aty = 0.0
             num_params = 0
             for name, feature in self._features.iteritems():
-                dr = (fj_new[name] - fj[name]) + (z_new - self.z_bar) - (f_new - self.f_bar)
+                dr = ((fj_new[name] - fj[name])
+                      + (z_new - self.z_bar)
+                      - (f_new - self.f_bar))
                 dual_res += dr.dot(dr)
                 norm_ax += fj_new[name].dot(fj_new[name])
                 zik = fj_new[name] + z_new - f_new
@@ -756,10 +767,13 @@ class GAM:
             fj = fj_new
             self.z_bar = z_new
             if self._has_covariate_classes:
-                prim_tol = np.sqrt(np.sum(self._covariate_class_sizes) * self._num_features) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
+                sccs = np.sum(self._covariate_class_sizes)
+                prim_tol = (np.sqrt(sccs * self._num_features) * eps_abs
+                            + eps_rel * np.max([norm_ax, norm_bz]))
 
             else:
-                prim_tol = np.sqrt(self._num_obs * self._num_features) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
+                prim_tol = (np.sqrt(self._num_obs * self._num_features) * eps_abs
+                            + eps_rel * np.max([norm_ax, norm_bz]))
 
             dual_tol = np.sqrt(num_params) * eps_abs + eps_rel * norm_aty
 
@@ -786,7 +800,8 @@ class GAM:
             self._save()
 
         if plot_convergence:
-            _plot_convergence(self.prim_res, self.prim_tol, self.dual_res, self.dual_tol, self.dev)
+            _plot_convergence(self.prim_res, self.prim_tol, self.dual_res,
+                              self.dual_tol, self.dev)
 
     def _optimize(self, upf, N, p=None):
         """Optimize \bar{z}.
@@ -839,7 +854,9 @@ class GAM:
                 prox = po._prox_binomial
 
             if self._has_covariate_classes:
-                return (1. / N) * prox(N*upf, self._rho, self._y, self._covariate_class_sizes, self._weights, self._eval_inv_link, p=p)
+                return (1. / N) * prox(N*upf, self._rho, self._y,
+                                       self._covariate_class_sizes,
+                                       self._weights, self._eval_inv_link, p=p)
 
         elif self._family == 'poisson':
             if self._link == 'log':
@@ -857,9 +874,11 @@ class GAM:
             else:
                 prox = po._prox_inv_gaussian
         else:
-            raise ValueError('Family {0:s} and Link Function {1:s} not (yet) supported.'.format(self._family, self._link))
+            msg = 'Family {0:s} and Link Function {1:s} not (yet) supported.'
+            raise ValueError(msg.format(self._family, self._link))
 
-        return (1. / N) * prox(N*upf, self._rho, self._y, w=self._weights, inv_link=self._eval_inv_link, p=p)
+        return (1. / N) * prox(N*upf, self._rho, self._y, w=self._weights,
+                               inv_link=self._eval_inv_link, p=p)
 
     def predict(self, X):
         """Apply fitted model to features.
@@ -1054,20 +1073,21 @@ class GAM:
         """Dispersion
 
         Returns the dispersion associated with the model. Depending on
-        the model family and whether the dispersion was specified by the
-        user, the dispersion may or may not be known a priori. This
-        function will estimate this parameter when appropriate.
+        the model family and whether the dispersion was specified by
+        the user, the dispersion may or may not be known a
+        priori. This function will estimate this parameter when
+        appropriate.
 
         There are different ways of estimating this parameter that may
         be appropriate for different kinds of families. The current
         implementation is based on the deviance, as in Eqn 3.10 on
-        p. 110 of GAMr. As discussed in that section, this tends not to
-        work well for Poisson data (with overdispersion) when the mean
-        response is small. Alternatives are offered in that section, but
-        I have not yet implemented them. This is not terribly relevant
-        for the current implementation since overdispersion is not
-        supported! (When overdispersion is not present, the dispersion
-        of the Poisson is exactly 1.)
+        p. 110 of GAMr. As discussed in that section, this tends not
+        to work well for Poisson data (with overdispersion) when the
+        mean response is small. Alternatives are offered in that
+        section, but I have not yet implemented them. This is not
+        terribly relevant for the current implementation since
+        overdispersion is not supported! (When overdispersion is not
+        present, the dispersion of the Poisson is exactly 1.)
 
         My eventual hope is to understand the appropriate methods for
         all the different circumstances and have intelligent defaults
@@ -1080,6 +1100,7 @@ class GAM:
                 'deviance' (default)
                 'pearson'
                 'fletcher'
+
         """
         if self._family == 'normal':
             if self._known_dispersion:
@@ -1088,10 +1109,10 @@ class GAM:
                 sigma2 = self.deviance() / (self._num_obs - self.dof())
                 return sigma2
         elif self._family == 'binomial':
-            if self._estimate_overdispersion:
-                return self._overdispersion()
-            elif self._known_dispersion:
+            if self._known_dispersion:
                 return self._dispersion
+            elif self._estimate_overdispersion:
+                return self._binomial_overdispersion()
             else:
                 return 1.
         elif self._family == 'poisson':
@@ -1112,24 +1133,254 @@ class GAM:
                 sigma2 = self.deviance() / (self._num_obs - self.dof())
                 return sigma2
 
-    def _overdispersion(self, formula=None):
+    def _binomial_overdispersion(self, formula=None):
         """Over-Dispersion
+
+        Parameters
+        ----------
+         formula : str
+            Which formula to use, either 'replication' or
+            'pearson'. See Notes.
+
+        Returns
+        -------
+         sigma2 : float
+            Estimate of over-dispersion. This is also saved as the
+            self._dispersion parameter so we only calculate this once
+            regardless of how many times this function is called.
+
+        Notes
+        -----
+        When using covariate classes, the observed variance may exceed
+        the baseline for the family due to clustering in the
+        population. See GLM for motivation. That text gives two
+        methodologies for estimating over-dispersion. When there are
+        no covariate classes (multiple observations with identical
+        features), estimating over-dispersion is not possible.
+
+        The most reliable assessment of over-dispersion is only
+        possible when there is replication amongst the covariate
+        classes. This is best illustrated through example. Suppose we
+        have data on patients from two hospitals as shown in the table
+        below. Note that there are 3 rows corresponding to Men in
+        hospital 1. These entries could of course be pooled to give
+        the total patients and survivors for this covariate class, but
+        because they have not, it permits us to estimate
+        over-dispersion more reliably.
+
+        Gender Hospital Patients Survivors
+          M       1       30        15
+          M       1       40        19
+          M       1       35        15
+          F       1       10         8
+          M       2       10         3
+          M       2       18         6
+          F       2       40        30
+
+        Because we are building a model based on gender and hospital
+        alone, we are assuming that all three entries are drawn from
+        the same binomial distribution. We could actually test that
+        hypothesis using, for example, Welch's t-Test. If the result
+        indicates a significant departure from the null hypothesis,
+        there must be some (unobserved) explanation for different
+        survival rates. Perhaps the repeated entries correspond to
+        different doctors, with some doctors being more effective than
+        others. Or perhaps the multiple entries refer to different
+        time periods, like before and after a new treatment was
+        instituted. Regardless, we can quantify the additional
+        variance and use it to make (hopefully) more accurate
+        confidence intervals.
+
+        When replication is present, we take the following approach,
+        per GLM. Suppose a particular covariate class (e.g. Gender=M,
+        Hospital=1) has r replicates. Across all r replicates,
+        determine the observed success rate, pi. In our example, we
+        have 105 patients and 49 survivors, for a total survival rate
+        of pi = 0.47. Next we compute the variance on r-1 DOF:
+
+                  1    r  (y_j - m_j * pi)^2
+           s^2 = --- \sum ------------------
+                 r-1  j=1  m_j pi * (1 - pi)
+
+        where y_j is the number of successes in the jth replicate, m_j
+        is the number of trials in the jth replicate, and s^2 is
+        estimated variance. Per GLM, this is an unbiased estimate of
+        the dispersion parameter. Filling in our specific numbers, we
+        get s^2 = 0.17, indicating under-dispersion. (Important note:
+        these are made up numbers, so there is actually more
+        consistency in the data than would be exhibited from a true
+        binomial model. Over-dispersion is more common than
+        under-dispersion.)
+
+        Each covariate class with replication can be used to derive an
+        estimate of the dispersion parameter. If we expect the
+        dispersion to be independent of the covariate classes (which
+        may or may not be true), we can pool these estimates, weighted
+        by the degree of replication. If the kth covariate class has
+        r_k replicates and dispersion estimate s_k^2, the overall
+        estimate of dispersion is:
+
+                  \sum_k (r_k - 1) * s_k^2
+           s^2 = -------------------------
+                     \sum_k (r_k - 1)
+
+        Another important note: the above formula is *not* present in
+        GLM. That text just says to pool the estimates, but does not
+        specify how. This approach makes sense to me, but that doesn't
+        make it correct!
+
+        When replication is not present, or even if the degree of
+        replication is small, the above methodology breaks
+        down. Instead, GLM advocates the use of a Pearson-residual
+        based approach. If pi_j is the model prediction for the jth
+        covariate class, then we estimate dispersion as:
+
+                   1          (y_j - m_j * pi_j)^2
+           s^2 = ----- \sum -----------------------
+                 n - p   j  m_j * pi_j * (1 - pi_j)
+
+        This is similar to the replicate-based formula, but we are
+        using the model prediction for pi_j instead of the pooled
+        observations, and we are using the n-p as the error DOF
+        instead of the number of replicates. This methodology still
+        breaks down when the sizes of the covariate classes, m_j, are
+        small.
+
+        In order to use the replicate-based formula, there must be at
+        least one covariate class exhibiting replication, and the
+        degree of replication must be at least two. If these
+        conditions are not met, and the user dictates that we use the
+        replicate-based formula, we simply ignore that directive and
+        use the Pearson-based approach. (It might be best to issue a
+        warning in this case, but we do not do that.)
+
+        If this function is called without specifying which
+        methodology to use, we use the following criteria in assessing
+        whether there is enough replication to use the first
+        approach. First, there must be at least two covariate classes
+        exhibiting replication. Second, the degree of replication of
+        the most-replicated covariate class must be at least 3. For
+        example, in the example data set above, there are two
+        covariate classes exhibiting replication: Males in Hospital 1,
+        and Males in Hospital 2, with 3 and 2 degrees of replication,
+        respectively. The degree of replication of the most-replicate
+        covariate class is therefore equal to 3. We would therefore
+        use the replicate-based formula in this case.
+
+        These criteria are completely arbitrary! I need to do more
+        research to determine the appropriate criteria.
 
         """
 
-        has_replication = True
+        if not self._has_covariate_classes:
+            return 1.
+
+        min_cc_replicates = 1
+        min_replication = 2
+
+        des_cc_replicates = 2
+        des_replication = 3
+
+        # Determine degree of replication
+        #
+        # To use the replication formula, we need at least one
+        # covariate class with replication, and that covariate class
+        # needs replication of at least 2. It might make sense to use
+        # a more stringent set of criteria, but this is enough for
+        # now.
+        #
+        # The way we decide whether two observations have the same
+        # covariate class is by encoding the covariate class by an
+        # index. Each categorical feature has already indexed each
+        # category by an internal integer between 0 and n_k - 1, where
+        # n_k is the number of categories of the kth feature. (None of
+        # this is applicable unless all the features are categorical.
+        #
+        # We use these internal indices along with the numbers of
+        # categories in conjunction with the numpy ravel_multi_index
+        # function to map a tuple of category indices into a single
+        # integer between 0 and the the product of all category sizes
+        # (minus 1).
+        #
+        # We need to take care to loop over the features in a
+        # consistent order, so we create the fnames array just to give
+        # an arbitrary but consistent ordering.
+        r = {}
+        covariate_class = np.zeros((self._num_obs,))
+        fnames = self._features.keys()
+        for i in range(self._num_obs):
+            multi_index = []
+            dims = []
+            for fname in fnames:
+                cindex, csize = self._features[fname].category_index(i)
+                multi_index.append(cindex)
+                dims.append(csize)
+
+            cci = np.ravel_multi_index(multi_index, dims)
+            covariate_class[i] = cci
+            r[cci] = r.get(cci, 0) + 1
+
+        num_cc_with_replicates = 0
+        max_replication = 0
+        for j in r.values():
+            if j > 1:
+                num_cc_with_replicates += 1
+            if j > max_replication:
+                max_replication = j
+
+        if ((num_cc_with_replicates >= min_cc_replicates
+             and max_replication >= min_replication)):
+            has_replication = True
+        else:
+            has_replication = False
+
+        if ((num_cc_with_replicates >= des_cc_replicates
+             and max_replication >= des_replication)):
+            has_desired_replication = True
+        else:
+            has_desired_replication = False
+
         if formula is None:
-            if has_replication:
+            if has_desired_replication:
                 formula = 'replication'
             else:
                 formula = 'pearson'
 
-        if not self._has_covariate_classes:
-            return 1.
-        elif formula == 'replication':
-            return 1.
+        if has_replication and formula == 'replication':
+            trials = {}
+            successes = {}
+            # Initial loop to pool trials/successes.
+            for i in range(self._num_obs):
+                cci = covariate_class[i]
+                trials[cci] = trials.get(cci, 0) + self._covariate_class_sizes[i]
+                successes[cci] = successes.get(cci, 0) + self._y[i]
+
+            # Final loop to compute dispersion
+            s2 = 0.
+            for i in range(self._num_obs):
+                cci = covariate_class[i]
+                pi = float(successes[cci]) / trials[cci]
+                num = self._y[i] - self._covariate_class_sizes[i] * pi
+                denom = self._covariate_class_sizes[i] * pi * (1 - pi)
+                s2 += num * num / denom
+
+            # Divide by the error DOF
+            s2 /= self._num_obs - len(r.keys())
+            self._known_dispersion = True
+            self._dispersion = s2
+            return s2
         else:
-            return 1.
+            mu = self._eval_inv_link(self._num_features * self.f_bar)
+            m = self._covariate_class_sizes
+            bl_var = np.multiply(mu, 1. - mu)
+            res = self._y - np.multiply(m, mu)
+            num = np.multiply(res, res)
+            denom = np.multiply(m, bl_var)
+            n_minus_p = self._num_obs - self.dof()
+            s2 = np.sum(np.divide(num, denom)) / n_minus_p
+            self._known_dispersion = True
+            self._dispersion = s2
+            return s2
 
     def dof(self):
         """Degrees of Freedom
@@ -1160,10 +1411,11 @@ class GAM:
             # add one to the DOF.
             p += 1
 
-        # Note that the deviance is twice the dispersion times the log-likelihood, so no factor
-        # of two required there.
+        # Note that the deviance is twice the dispersion times the
+        # log-likelihood, so no factor of two required there.
         return self.deviance() / self.dispersion() + 2. * p
-        #return self.deviance() / self._num_obs + 2. * p * self.dispersion() / self._num_obs
+        # return (self.deviance() / self._num_obs
+        #          + 2. * p * self.dispersion() / self._num_obs)
 
     def aicc(self):
         # Eqn 6.32 on p. 304 of [GAMr]
@@ -1193,7 +1445,8 @@ class GAM:
         to force smoother fits by exaggerating the effective degrees of
         freedom. In that case, a value of gamma > 1. may be desirable.
         """
-        return self._num_obs * self.deviance() / ((self._num_obs - gamma * self.dof()) ** 2.)
+        denom = self._num_obs - gamma * self.dof()
+        return self._num_obs * self.deviance() / (denom * denom)
 
     def summary(self):
         """Print summary statistics associated with fitted model.
