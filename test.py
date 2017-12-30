@@ -36,26 +36,32 @@ def test_logistic_regression(plot_flag=False, save_flag=False, load_flag=False):
 
         X, y = generate_data(1000, link=_logit_link, family=_binomial_family)
         mdl.fit(X, y, verbose=False, plot_convergence=plot_flag, save_flag=save_flag)
-        
+
     mdl.summary()
 
     # Get the "true" probabilities, ytest
-    Xtest, mu_test = generate_data(100, link=_logit_link, family=_binomial_family, return_mean=True)
+    Xtest, mu_test = generate_data(100, link=_logit_link,
+                                   family=_binomial_family,
+                                   return_mean=True)
     mu_hat = mdl.predict(Xtest)
     err = mu_test - mu_hat
     print 'MSE:', err.dot(err) / len(err) # MSE
 
-def test_logistic_regression_covariate_classes(plot_flag=False, save_flag=False, load_flag=False):
+def test_logistic_regression_covariate_classes(plot_flag=False, save_flag=False,
+                                               load_flag=False):
     if load_flag:
         mdl = gam.GAM(load_from_file='test_logistic_regression_cc_model.pckl')
     else:
-        mdl = gam.GAM('binomial', estimate_overdispersion=True, name='test_logistic_regression_cc')
+        mdl = gam.GAM('binomial', estimate_overdispersion=True,
+                      name='test_logistic_regression_cc')
         mdl.add_feature(name='gender', type='categorical')
         mdl.add_feature(name='country', type='categorical')
 
         X, y, ccs = generate_covariate_class_data()
-        mdl.fit(X, y, covariate_class_sizes=ccs, plot_convergence=plot_flag, save_flag=save_flag)
-        
+        mdl.fit(X, y, covariate_class_sizes=ccs,
+                plot_convergence=plot_flag,
+                save_flag=save_flag)
+
     mdl.summary()
 
     # Get the "true" probabilities, ytest
@@ -181,15 +187,16 @@ def gmu_hft(x):
     # This is from Equation 5.22 of Hastie, Friedman, Tibshirani, "Elements of Statistical Learning"
     return np.sin(12.*(x + 0.2)) / (x + 0.2)
 
-def generate_data(num_obs, link=_identity_link, family=_gaussian_family, return_mean=False, include_hft=False):
+def generate_data(num_obs, link=_identity_link, family=_gaussian_family,
+                  return_mean=False, include_hft=False):
     purchases = [0, 3, 10, 16, 27, 30]
     ppurchases = [0.1, 0.2, 0.3, 0.3, 0.05, 0.05]
     genders = ['male', 'female']
     pgenders = [0.7, 0.3]
     countries = ['USA', 'CAN', 'GBR']
     np.random.seed(3)
-    X = pd.DataFrame(data={'purchases': np.random.choice(purchases,   size=num_obs, p=ppurchases),
-                           'gender':  np.random.choice(genders,   size=num_obs, p=pgenders),
+    X = pd.DataFrame(data={'purchases': np.random.choice(purchases, size=num_obs, p=ppurchases),
+                           'gender': np.random.choice(genders, size=num_obs, p=pgenders),
                            'country': np.random.choice(countries, size=num_obs),
                            'hft':     np.random.random(size=num_obs)
                            })
@@ -208,12 +215,50 @@ def generate_data(num_obs, link=_identity_link, family=_gaussian_family, return_
     return X, y
 
 def generate_covariate_class_data(return_mean=False):
-    X = pd.DataFrame(data={'gender': ['male', 'female', 'male', 'female', 'male', 'female'],
-                           'country': ['usa', 'usa', 'gbr', 'gbr', 'can', 'can']})
+    genders = ['male',
+               'female',
+               'male',
+               'female',
+               'male',
+               'female',
+               'male',
+               'female',
+               'male',
+               'female',
+               'male',
+               'female',
+               'male',
+               'female',
+               'male',
+               'female',
+               'male']
 
-    ccs = np.array([1000, 1400, 2200, 1300, 3200, 1700])
+    countries = ['usa',
+                 'usa',
+                 'gbr',
+                 'gbr',
+                 'can',
+                 'can',
+                 'usa',
+                 'usa',
+                 'gbr',
+                 'gbr',
+                 'can',
+                 'can',
+                 'usa',
+                 'usa',
+                 'gbr',
+                 'gbr',
+                 'can']
 
-    np.random.seed(3)
+    X = pd.DataFrame(data={'gender': genders,
+                           'country': countries})
+
+    ccs = np.array([1000, 1400, 2200, 1300, 3200, 1700,
+                     500, 1700, 1400,  800, 2600, 1200,
+                    1600,  900,  400, 1600, 1200])
+
+    np.random.seed(4)
     gmu = gmu_gender(X['gender'].values)
     gmu += gmu_country(X['country'].values)
     mu = _logit_link(gmu)

@@ -1111,7 +1111,7 @@ class GAM:
             if self._known_dispersion:
                 return self._dispersion
             elif self._estimate_overdispersion:
-                return self._overdispersion()
+                return self._binomial_overdispersion()
             else:
                 return 1.
         elif self._family == 'poisson':
@@ -1132,7 +1132,7 @@ class GAM:
                 sigma2 = self.deviance() / (self._num_obs - self.dof())
                 return sigma2
 
-    def _overdispersion(self, formula=None):
+    def _binomial_overdispersion(self, formula=None):
         """Over-Dispersion
 
         Parameters
@@ -1274,11 +1274,6 @@ class GAM:
         if not self._has_covariate_classes:
             return 1.
 
-        # To use the replication formula, we need at least one
-        # covariate class with replication, and that covariate class
-        # needs replication of at least 2. It might make sense to use
-        # a more stringent set of criteria, but this is enough for
-        # now.
         min_cc_replicates = 1
         min_replication = 2
 
@@ -1286,8 +1281,13 @@ class GAM:
         des_replication = 3
 
         # Determine degree of replication
-        r = {}
-        covariate_class = np.zeros((self._num_obs,))
+        #
+        # To use the replication formula, we need at least one
+        # covariate class with replication, and that covariate class
+        # needs replication of at least 2. It might make sense to use
+        # a more stringent set of criteria, but this is enough for
+        # now.
+        #
         # The way we decide whether two observations have the same
         # covariate class is by encoding the covariate class by an
         # index. Each categorical feature has already indexed each
@@ -1295,42 +1295,27 @@ class GAM:
         # n_k is the number of categories of the kth feature. (None of
         # this is applicable unless all the features are categorical.
         #
-        # Suppose features 1, 2, 3 have numbers of categories 3, 5, 6,
-        # respectively. There are 3*5*6 possible combinations of
-        # categories. We identify the covariate class as an integer,
-        # X, between 0 and 3*5*6-1. We construct X as follows: X % 3
-        # is an integer between 0 and 2, indicating which category its
-        # first feature is in. ( (X - (X % 3)) / 3 ) % 5
+        # We use these internal indices along with the numbers of
+        # categories in conjunction with the numpy ravel_multi_index
+        # function to map a tuple of category indices into a single
+        # integer between 0 and the the product of all category sizes
+        # (minus 1).
         #
-        # We take the category number of the first feature and add to
-        # it (the category number of the second feature *
-        #
-        # 2/3, 3/5, 4/6
-        # -> 4 * 15 + 3*3 + 2 = 71
-        # 71 % 3 = 2 check
-        # (71 - 2) / 3 = 23
-        # 23 % 5 = 3 check
-        # (23 - 3) / 5 = 4 check
-        # X = 4 * (5 * 3) + 3 * 3 + 2
-        #   = (4 * 5 + 3) * 3 + 2
-        #   = ncc * size_1 + index_1
-        #
-        # ncc = 0
-        # ncc = ncc * size_3 + index_3 = 0 * 6 + 4 = 4
-        # ncc = ncc * size_2 + index_2 # ncc = 4 * 5 + 3 = 23
-        # ncc = ncc * size_1 + index_1 # ncc = 23 * 3 + 2 = 71
-        #
-        # ncc = 0
-        # ncc = ncc * size_1 + index_1 = 0 * 3 + 2 = 2
-        # ncc = 2 * 5 + 3 = 13
-        # ncc = 13 * 6 + 4 = 82
-
+        # We need to take care to loop over the features in a
+        # consistent order, so we create the fnames array just to give
+        # an arbitrary but consistent ordering.
+        r = {}
+        covariate_class = np.zeros((self._num_obs,))
         fnames = self._features.keys()
         for i in range(self._num_obs):
-            cci = 0
+            multi_index = []
+            dims = []
             for fname in fnames:
                 cindex, csize = self._features[fname].category_index(i)
-                cci = cci * csize + cindex
+                multi_index.append(cindex)
+                dims.append(csize)
+
+            cci = np.ravel_multi_index(multi_index, dims)
             covariate_class[i] = cci
             r[cci] = r.get(cci, 0) + 1
 
