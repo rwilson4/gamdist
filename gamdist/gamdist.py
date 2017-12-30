@@ -1072,20 +1072,21 @@ class GAM:
         """Dispersion
 
         Returns the dispersion associated with the model. Depending on
-        the model family and whether the dispersion was specified by the
-        user, the dispersion may or may not be known a priori. This
-        function will estimate this parameter when appropriate.
+        the model family and whether the dispersion was specified by
+        the user, the dispersion may or may not be known a
+        priori. This function will estimate this parameter when
+        appropriate.
 
         There are different ways of estimating this parameter that may
         be appropriate for different kinds of families. The current
         implementation is based on the deviance, as in Eqn 3.10 on
-        p. 110 of GAMr. As discussed in that section, this tends not to
-        work well for Poisson data (with overdispersion) when the mean
-        response is small. Alternatives are offered in that section, but
-        I have not yet implemented them. This is not terribly relevant
-        for the current implementation since overdispersion is not
-        supported! (When overdispersion is not present, the dispersion
-        of the Poisson is exactly 1.)
+        p. 110 of GAMr. As discussed in that section, this tends not
+        to work well for Poisson data (with overdispersion) when the
+        mean response is small. Alternatives are offered in that
+        section, but I have not yet implemented them. This is not
+        terribly relevant for the current implementation since
+        overdispersion is not supported! (When overdispersion is not
+        present, the dispersion of the Poisson is exactly 1.)
 
         My eventual hope is to understand the appropriate methods for
         all the different circumstances and have intelligent defaults
@@ -1098,6 +1099,7 @@ class GAM:
                 'deviance' (default)
                 'pearson'
                 'fletcher'
+
         """
         if self._family == 'normal':
             if self._known_dispersion:
@@ -1106,10 +1108,10 @@ class GAM:
                 sigma2 = self.deviance() / (self._num_obs - self.dof())
                 return sigma2
         elif self._family == 'binomial':
-            if self._estimate_overdispersion:
-                return self._overdispersion()
-            elif self._known_dispersion:
+            if self._known_dispersion:
                 return self._dispersion
+            elif self._estimate_overdispersion:
+                return self._overdispersion()
             else:
                 return 1.
         elif self._family == 'poisson':
@@ -1133,21 +1135,266 @@ class GAM:
     def _overdispersion(self, formula=None):
         """Over-Dispersion
 
+        Parameters
+        ----------
+         formula : str
+            Which formula to use, either 'replication' or
+            'pearson'. See Notes.
+
+        Returns
+        -------
+         sigma2 : float
+            Estimate of over-dispersion. This is also saved as the
+            self._dispersion parameter so we only calculate this once
+            regardless of how many times this function is called.
+
+        Notes
+        -----
+        When using covariate classes, the observed variance may exceed
+        the baseline for the family due to clustering in the
+        population. See GLM for motivation. That text gives two
+        methodologies for estimating over-dispersion. When there are
+        no covariate classes (multiple observations with identical
+        features), estimating over-dispersion is not possible.
+
+        The most reliable assessment of over-dispersion is only
+        possible when there is replication amongst the covariate
+        classes. This is best illustrated through example. Suppose we
+        have data on patients from two hospitals as shown in the table
+        below. Note that there are 3 rows corresponding to Men in
+        hospital 1. These entries could of course be pooled to give
+        the total patients and survivors for this covariate class, but
+        because they have not, it permits us to estimate
+        over-dispersion more reliably.
+
+        Gender Hospital Patients Survivors
+          M       1       30        15
+          M       1       40        19
+          M       1       35        15
+          F       1       10         8
+          M       2       10         3
+          M       2       18         6
+          F       2       40        30
+
+        Because we are building a model based on gender and hospital
+        alone, we are assuming that all three entries are drawn from
+        the same binomial distribution. We could actually test that
+        hypothesis using, for example, Welch's t-Test. If the result
+        indicates a significant departure from the null hypothesis,
+        there must be some (unobserved) explanation for different
+        survival rates. Perhaps the repeated entries correspond to
+        different doctors, with some doctors being more effective than
+        others. Or perhaps the multiple entries refer to different
+        time periods, like before and after a new treatment was
+        instituted. Regardless, we can quantify the additional
+        variance and use it to make (hopefully) more accurate
+        confidence intervals.
+
+        When replication is present, we take the following approach,
+        per GLM. Suppose a particular covariate class (e.g. Gender=M,
+        Hospital=1) has r replicates. Across all r replicates,
+        determine the observed success rate, pi. In our example, we
+        have 105 patients and 49 survivors, for a total survival rate
+        of pi = 0.47. Next we compute the variance on r-1 DOF:
+
+                  1    r  (y_j - m_j * pi)^2
+           s^2 = --- \sum ------------------
+                 r-1  j=1  m_j pi * (1 - pi)
+
+        where y_j is the number of successes in the jth replicate, m_j
+        is the number of trials in the jth replicate, and s^2 is
+        estimated variance. Per GLM, this is an unbiased estimate of
+        the dispersion parameter. Filling in our specific numbers, we
+        get s^2 = 0.17, indicating under-dispersion. (Important note:
+        these are made up numbers, so there is actually more
+        consistency in the data than would be exhibited from a true
+        binomial model. Over-dispersion is more common than
+        under-dispersion.)
+
+        Each covariate class with replication can be used to derive an
+        estimate of the dispersion parameter. If we expect the
+        dispersion to be independent of the covariate classes (which
+        may or may not be true), we can pool these estimates, weighted
+        by the degree of replication. If the kth covariate class has
+        r_k replicates and dispersion estimate s_k^2, the overall
+        estimate of dispersion is:
+
+                  \sum_k (r_k - 1) * s_k^2
+           s^2 = -------------------------
+                     \sum_k (r_k - 1)
+
+        Another important note: the above formula is *not* present in
+        GLM. That text just says to pool the estimates, but does not
+        specify how. This approach makes sense to me, but that doesn't
+        make it correct!
+
+        When replication is not present, or even if the degree of
+        replication is small, the above methodology breaks
+        down. Instead, GLM advocates the use of a Pearson-residual
+        based approach. If pi_j is the model prediction for the jth
+        covariate class, then we estimate dispersion as:
+
+                   1          (y_j - m_j * pi_j)^2
+           s^2 = ----- \sum -----------------------
+                 n - p   j  m_j * pi_j * (1 - pi_j)
+
+        This is similar to the replicate-based formula, but we are
+        using the model prediction for pi_j instead of the pooled
+        observations, and we are using the n-p as the error DOF
+        instead of the number of replicates. This methodology still
+        breaks down when the sizes of the covariate classes, m_j, are
+        small.
+
+        In order to use the replicate-based formula, there must be at
+        least one covariate class exhibiting replication, and the
+        degree of replication must be at least two. If these
+        conditions are not met, and the user dictates that we use the
+        replicate-based formula, we simply ignore that directive and
+        use the Pearson-based approach. (It might be best to issue a
+        warning in this case, but we do not do that.)
+
+        If this function is called without specifying which
+        methodology to use, we use the following criteria in assessing
+        whether there is enough replication to use the first
+        approach. First, there must be at least two covariate classes
+        exhibiting replication. Second, the degree of replication of
+        the most-replicated covariate class must be at least 3. For
+        example, in the example data set above, there are two
+        covariate classes exhibiting replication: Males in Hospital 1,
+        and Males in Hospital 2, with 3 and 2 degrees of replication,
+        respectively. The degree of replication of the most-replicate
+        covariate class is therefore equal to 3. We would therefore
+        use the replicate-based formula in this case.
+
+        These criteria are completely arbitrary! I need to do more
+        research to determine the appropriate criteria.
+
         """
 
-        has_replication = True
+        if not self._has_covariate_classes:
+            return 1.
+
+        # To use the replication formula, we need at least one
+        # covariate class with replication, and that covariate class
+        # needs replication of at least 2. It might make sense to use
+        # a more stringent set of criteria, but this is enough for
+        # now.
+        min_cc_replicates = 1
+        min_replication = 2
+
+        des_cc_replicates = 2
+        des_replication = 3
+
+        # Determine degree of replication
+        r = {}
+        covariate_class = np.zeros((self._num_obs,))
+        # The way we decide whether two observations have the same
+        # covariate class is by encoding the covariate class by an
+        # index. Each categorical feature has already indexed each
+        # category by an internal integer between 0 and n_k - 1, where
+        # n_k is the number of categories of the kth feature. (None of
+        # this is applicable unless all the features are categorical.
+        #
+        # Suppose features 1, 2, 3 have numbers of categories 3, 5, 6,
+        # respectively. There are 3*5*6 possible combinations of
+        # categories. We identify the covariate class as an integer,
+        # X, between 0 and 3*5*6-1. We construct X as follows: X % 3
+        # is an integer between 0 and 2, indicating which category its
+        # first feature is in. ( (X - (X % 3)) / 3 ) % 5
+        #
+        # We take the category number of the first feature and add to
+        # it (the category number of the second feature *
+        #
+        # 2/3, 3/5, 4/6
+        # -> 4 * 15 + 3*3 + 2 = 71
+        # 71 % 3 = 2 check
+        # (71 - 2) / 3 = 23
+        # 23 % 5 = 3 check
+        # (23 - 3) / 5 = 4 check
+        # X = 4 * (5 * 3) + 3 * 3 + 2
+        #   = (4 * 5 + 3) * 3 + 2
+        #   = ncc * size_1 + index_1
+        #
+        # ncc = 0
+        # ncc = ncc * size_3 + index_3 = 0 * 6 + 4 = 4
+        # ncc = ncc * size_2 + index_2 # ncc = 4 * 5 + 3 = 23
+        # ncc = ncc * size_1 + index_1 # ncc = 23 * 3 + 2 = 71
+        #
+        # ncc = 0
+        # ncc = ncc * size_1 + index_1 = 0 * 3 + 2 = 2
+        # ncc = 2 * 5 + 3 = 13
+        # ncc = 13 * 6 + 4 = 82
+
+        fnames = self._features.keys()
+        for i in range(self._num_obs):
+            cci = 0
+            for fname in fnames:
+                cindex, csize = self._features[fname].category_index(i)
+                cci = cci * csize + cindex
+            covariate_class[i] = cci
+            r[cci] = r.get(cci, 0) + 1
+
+        num_cc_with_replicates = 0
+        max_replication = 0
+        for j in r.values():
+            if j > 1:
+                num_cc_with_replicates += 1
+            if j > max_replication:
+                max_replication = j
+
+        if ((num_cc_with_replicates >= min_cc_replicates
+             and max_replication >= min_replication)):
+            has_replication = True
+        else:
+            has_replication = False
+
+        if ((num_cc_with_replicates >= des_cc_replicates
+             and max_replication >= des_replication)):
+            has_desired_replication = True
+        else:
+            has_desired_replication = False
+
         if formula is None:
-            if has_replication:
+            if has_desired_replication:
                 formula = 'replication'
             else:
                 formula = 'pearson'
 
-        if not self._has_covariate_classes:
-            return 1.
-        elif formula == 'replication':
-            return 1.
+        if has_replication and formula == 'replication':
+            trials = {}
+            successes = {}
+            # Initial loop to pool trials/successes.
+            for i in range(self._num_obs):
+                cci = covariate_class[i]
+                trials[cci] = trials.get(cci, 0) + self._covariate_class_sizes[i]
+                successes[cci] = successes.get(cci, 0) + self._y[i]
+
+            # Final loop to compute dispersion
+            s2 = 0.
+            for i in range(self._num_obs):
+                cci = covariate_class[i]
+                pi = float(successes[cci]) / trials[cci]
+                num = self._y[i] - self._covariate_class_sizes[i] * pi
+                denom = self._covariate_class_sizes[i] * pi * (1 - pi)
+                s2 += num * num / denom
+
+            # Divide by the error DOF
+            s2 /= self._num_obs - len(r.keys())
+            self._known_dispersion = True
+            self._dispersion = s2
+            return s2
         else:
-            return 1.
+            mu = self._eval_inv_link(self._num_features * self.f_bar)
+            m = self._covariate_class_sizes
+            bl_var = mu.multiply(1. - mu)
+            res = self._y - m.multiply(mu)
+            num = res.multiply(res)
+            denom = m.multiply(bl_var)
+            n_minus_p = np.sum(m) - self.dof()
+            s2 = np.sum(num.divide(denom)) / n_minus_p
+            self._known_dispersion = True
+            self._dispersion = s2
+            return s2
 
     def dof(self):
         """Degrees of Freedom

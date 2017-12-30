@@ -600,6 +600,25 @@ class _CategoricalFeature(_Feature):
         """
         return len(self.p)
 
+    def category_index(self, observation):
+        """Return category index of ith observation.
+
+        Parameters
+        ----------
+         observation : int
+           Observation index. Must be between 0 and the number of
+           observations. No check is performed.
+
+        Returns
+        -------
+         cindex : int
+           Category index of the ith observation.
+         csize : int
+           Number of categories.
+
+        """
+        return self.x[observation], self._num_categories
+
     def dof(self):
         """Degrees of freedom.
 
