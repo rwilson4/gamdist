@@ -49,7 +49,7 @@ def test_logistic_regression_covariate_classes(plot_flag=False, save_flag=False,
     if load_flag:
         mdl = gam.GAM(load_from_file='test_logistic_regression_cc_model.pckl')
     else:
-        mdl = gam.GAM('binomial', name='test_logistic_regression_cc')
+        mdl = gam.GAM('binomial', estimate_overdispersion=True, name='test_logistic_regression_cc')
         mdl.add_feature(name='gender', type='categorical')
         mdl.add_feature(name='country', type='categorical')
 

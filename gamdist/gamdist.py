@@ -1386,12 +1386,12 @@ class GAM:
         else:
             mu = self._eval_inv_link(self._num_features * self.f_bar)
             m = self._covariate_class_sizes
-            bl_var = mu.multiply(1. - mu)
-            res = self._y - m.multiply(mu)
-            num = res.multiply(res)
-            denom = m.multiply(bl_var)
-            n_minus_p = np.sum(m) - self.dof()
-            s2 = np.sum(num.divide(denom)) / n_minus_p
+            bl_var = np.multiply(mu, 1. - mu)
+            res = self._y - np.multiply(m, mu)
+            num = np.multiply(res, res)
+            denom = np.multiply(m, bl_var)
+            n_minus_p = self._num_obs - self.dof()
+            s2 = np.sum(np.divide(num, denom)) / n_minus_p
             self._known_dispersion = True
             self._dispersion = s2
             return s2
