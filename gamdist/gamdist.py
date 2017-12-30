@@ -35,10 +35,10 @@ from .spline_feature import _SplineFeature
 import proximal_operators as po
 
 # To do:
-# - Implement overdispersion for Binomial and Poisson families
+# - Hierarchical models
 # - Piecewise constant fits, total variation regularization
 # - Monotone constraint
-# - Hierarchical models
+# - Implement overdispersion for Poisson family
 # - Implement Multinomial, Proportional Hazards
 # - Implement outlier detection
 # - AICc, BIC, R-squared estimate
@@ -64,6 +64,7 @@ import proximal_operators as po
 # - Implement Binomial models for covariate classes
 # - Constrain spline to have mean prediction 0 over the data
 # - Save and load properly
+# - Implement overdispersion for Binomial family
 
 FAMILIES = ['normal',
             'binomial',

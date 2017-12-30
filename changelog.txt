@@ -1,9 +1,12 @@
+2017-12-30 : Overdispersion
+- Implemented over- (or under-) dispersion for binomial families.
+
+2017-12-29 : Save/Load
+- Added ability to save models after fitting has completed and load
+  them for subsequent predictions.
+
 2017-12-28 : Covariate classes and spline fix
 - Adding ability to use covariate classes with categorical variables
   and binomial response.
 - Fixing spline normalization to have mean zero over the training
   data.
-
-2017-12-29 : Save/Load
-- Added ability to save models after fitting has completed and load
-  them for subsequent predictions.

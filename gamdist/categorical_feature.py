@@ -165,7 +165,8 @@ class _CategoricalFeature(_Feature):
                 if 'coef' in regularization['network_lasso']:
                     self._lambda_network_lasso = regularization['network_lasso']['coef']
                 else:
-                    raise ValueError('No coefficient specified for Network Lasso regularization term.')
+                    msg = 'No coefficient specified for Network Lasso regularization term.'
+                    raise ValueError(msg)
 
                 if 'edges' in regularization['network_lasso']:
                     self._edges = regularization['network_lasso']['edges']
@@ -184,7 +185,8 @@ class _CategoricalFeature(_Feature):
 
                     # Wait to create D until we have the data
                 else:
-                    raise ValueError('Edges not specified for Network Lasso regularization term.')
+                    msg = 'Edges not specified for Network Lasso regularization term.'
+                    raise ValueError(msg)
 
             if (self._has_l1 or self._has_l2) and 'prior' in regularization:
                 self._has_prior = True
@@ -329,7 +331,9 @@ class _CategoricalFeature(_Feature):
             self._prior = prior
 
 
-        self._AtA = sparse.dia_matrix((cnt, 0), shape=(self._num_categories, self._num_categories), dtype=np.int)
+        self._AtA = sparse.dia_matrix((cnt, 0),
+                                      shape=(self._num_categories, self._num_categories),
+                                      dtype=np.int)
         self.p = np.zeros(self._num_categories)
 
         if covariate_class_sizes is None:
@@ -488,7 +492,11 @@ class _CategoricalFeature(_Feature):
         q = cvx.Variable(self._num_categories)
 
         if self._has_l2:
-            AtA = cvx.Constant(self._AtA + sparse.dia_matrix( ((2. / rho) * self._lambda2, 0), shape=(self._num_categories, self._num_categories), dtype=np.float))
+            AtA = cvx.Constant(self._AtA
+                               + sparse.dia_matrix( ((2. / rho) * self._lambda2, 0),
+                                                    shape=(self._num_categories,
+                                                           self._num_categories),
+                                                    dtype=np.float))
         else:
             AtA = cvx.Constant(self._AtA)
 
@@ -516,7 +524,8 @@ class _CategoricalFeature(_Feature):
                             0 <= s[:] - D * q[:]]
 
         prob = cvx.Problem(cvx.Minimize(obj), constraints)
-        prob.solve(verbose=self._verbose, solver=self._solver)#, abstol=1e-3, reltol=1e-3, feastol=1e-3)
+        prob.solve(verbose=self._verbose, solver=self._solver)
+        #, abstol=1e-3, reltol=1e-3, feastol=1e-3)
 
         if prob.status != cvx.OPTIMAL and prob.status != cvx.OPTIMAL_INACCURATE:
             print "Categorical variable failed to converge."
