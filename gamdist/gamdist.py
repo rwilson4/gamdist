@@ -1259,13 +1259,16 @@ class GAM:
         whether there is enough replication to use the first
         approach. First, there must be at least two covariate classes
         exhibiting replication. Second, the degree of replication of
-        the most-replicated covariate class must be at least 3. For
-        example, in the example data set above, there are two
-        covariate classes exhibiting replication: Males in Hospital 1,
-        and Males in Hospital 2, with 3 and 2 degrees of replication,
-        respectively. The degree of replication of the most-replicate
-        covariate class is therefore equal to 3. We would therefore
-        use the replicate-based formula in this case.
+        the most-replicated covariate class must be at least
+        3. Finally, the total replication degrees of freedom must be
+        at least 10. For example, in the example data set above, there
+        are two covariate classes exhibiting replication: Males in
+        Hospital 1, and Males in Hospital 2, with 3 and 2 degrees of
+        replication, respectively. The degree of replication of the
+        most-replicate covariate class is therefore equal to 3. The
+        degrees of freedom are (2-1) + (3-1) = 3, which is below the
+        threshold of 10. We would therefore use the Pearson-based
+        formula in this case.
 
         These criteria are completely arbitrary! I need to do more
         research to determine the appropriate criteria.
@@ -1280,6 +1283,7 @@ class GAM:
 
         des_cc_replicates = 2
         des_replication = 3
+        des_replication_dof = 10
 
         # Determine degree of replication
         #
@@ -1322,9 +1326,11 @@ class GAM:
 
         num_cc_with_replicates = 0
         max_replication = 0
+        replication_dof = 0
         for j in r.values():
             if j > 1:
                 num_cc_with_replicates += 1
+                replication_dof += j - 1
             if j > max_replication:
                 max_replication = j
 
@@ -1335,7 +1341,8 @@ class GAM:
             has_replication = False
 
         if ((num_cc_with_replicates >= des_cc_replicates
-             and max_replication >= des_replication)):
+             and max_replication >= des_replication
+             and replication_dof >= des_replication_dof)):
             has_desired_replication = True
         else:
             has_desired_replication = False
@@ -1365,7 +1372,7 @@ class GAM:
                 s2 += num * num / denom
 
             # Divide by the error DOF
-            s2 /= self._num_obs - len(r.keys())
+            s2 /= replication_dof
             self._known_dispersion = True
             self._dispersion = s2
             return s2
