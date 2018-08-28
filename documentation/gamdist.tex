@@ -1,0 +1,97 @@
+\documentclass[12pt]{article}
+\usepackage{fullpage,graphicx,psfrag,amsmath,amsfonts,verbatim}
+\usepackage[small,bf]{caption}
+
+\input defs.tex
+
+\bibliographystyle{alpha}
+
+\title{gamdist: Generalized Additive Models in Python}
+\author{Bob Wilson}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+TBD
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{Introduction}
+This paper introduces a Python library called \texttt{gamdist}, which uses a distributed optimization technique called the Alternating Direction Method of Multipliers (ADMM) to fit a special type of regression model called a Generalized Additve Model (GAM)  to data. 
+
+\paragraph{Outline of Paper} In \S\ref{sec:gam} we describe Generalized Additive Models. In \S\ref{sec:admm} we describe the Alternating Direction Method of Multipliers and how it may be used to fit GAMs. In \S\ref{sec:arch}, we describe the architecture of the library, including relevant implementation details.
+
+\section{Generalized Additive Models}
+\label{sec:gam}
+
+First described by \cite{HT:86}, Generalized Additive Models extend Generalized Linear Models, which themselves extend linear models. Let us therefore begin with the linear model. Linear models are concerned with the conditional distribution of a response $Y$ given one or more features, $X=x$. The most common type of linear model assumes this conditional distribution is Gaussian, with mean $\mu(x) = \nu(x)^T \beta$ and variance $\sigma^2$. In other words, $Y \given X = x \sim \normal (\mu(x), \sigma^2)$. The mean of this distribution is permitted to depend on the features, but the variance is constant. Moreover, the dependence of the mean on the features is parametric: $\nu(x)$ is chosen by the statistician in advance. 
+
+Often, $\nu(x) = x$ (sometimes we augment $\nu(x)$ with a constant to capture an affine term), but the model can be extended by adding polynomial  or otherwise parametric functions of the features. For example, we might choose $\nu(x) = \begin{bmatrix}x_1 & x_2 & x_1^2 & x_1 \cdot x_2 & x_2^2 \end{bmatrix}^T$ to capture first and second order terms of a model with two features. As another example, we might define $\nu(x) = \begin{bmatrix} 1 & \log(x_1) \end{bmatrix}^T$ to capture an affine relationship between the mean and the logarithm of $x_1$. These models are nonlinear in the features, but linear in the parameters $\beta$.
+
+Another common situation is when some or all of the features are categorical. For example, consider a model with a single feature corresponding to a person's favorite color, and suppose choices are limited to red, green, and blue. The model would consist of the average responses for people who prefer any particular color. We might support such a model by defining
+\begin{displaymath}
+   \nu(x) = \begin{cases}
+       \begin{bmatrix} 1 & 0 & 0 \end{bmatrix}^T & \textrm{if $x = $ red} \\
+       \begin{bmatrix} 0 & 1 & 0 \end{bmatrix}^T & \textrm{if $x = $ green} \\
+       \begin{bmatrix} 0 & 0 & 1 \end{bmatrix}^T & \textrm{if $x = $ blue.}
+   \end{cases}
+\end{displaymath}
+Alternative approaches to encoding categorical variables are common and useful in different circumstances \cite{Agresti:2012}. We see that the simple linear model is applicable to a wide range of problems, even those that may not appear linear at first glance.
+
+Fitting a linear model to a set of observations is called linear regression, and is accomplished by solving a least squares optimization problem. This is an example of maximum likelihood estimation (MLE), which is the unifying approach used throughout \texttt{gamdist}. It is worth formulating this optimization problem so that we may see how it evolves as we consider more general scenarios.
+
+Suppose we have $n$ observations of the form $\{ (x^{(i)}, \,y^{(i)} ) \}_{i=1, \ldots, n}$. We assume these observations are independent and drawn from the same (unknown) joint distribution. Under the linear model, $Y \given X = x^{(i)} \sim \normal (\mu(x^{(i)}), \sigma^2)$. The likelihood of a particular observation is
+\begin{displaymath}
+    \mathcal{L}(\beta; x^{(i)}, y^{(i)}) = \frac{1}{\sqrt{2\pi \sigma^2}} \cdot \exp\left( -\frac{1}{2 \sigma^2} \left(y^{(i)} - \nu \left( x^{(i)} \right)^T \beta \right)^2 \right).
+\end{displaymath}
+Note that by convention the likelihood is interpreted as a function of $\beta$ parameterized by the observation $(x^{(i)}, y^{(i)})$. The likelihood of the entire set of observations is the product of the likelihoods of the individual observations. The log-likelihood is the sum of the log-likelihoods of the individual observations:
+\begin{displaymath}
+   \ell(\beta; x, y) = -n/2 \log(2\pi \sigma^2) - \frac{1}{2\sigma^2} \sum_{i=1}^n \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2.
+\end{displaymath}
+Maximizing the likelihood is the same as maximizing the log-likelihood, and if we are only interested in estimating $\beta$, this is equivalent to the problem
+\begin{displaymath}
+        \begin{array}{ll}
+            \mbox{minimize} & \sum_{i=1}^n \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2,
+        \end{array}
+\end{displaymath}
+where the variable is $\beta$ and $y^{(i)}$ and $\nu(x^{(i)})$ are data.
+
+If we assume the model is correct (that is, that the conditional distribution really has the assumed form), exact formulae exist for confidence intervals on the parameters $\beta$. If the variance is unknown, it too can be estimated from the data. We can employ hypothesis tests against the null hypothesis that some or all of the components of $\beta$ are zero. We can apply the resulting model to new data assumed to be drawn from the same joint distribution to compute confidence intervals on the response, $Y \given X = x_\textrm{new}$ or the mean of this distribution, $\mu(x_\textrm{new})$. These are immensely valuable tools in the analysis of data and the application of data to predictions. A good reference on linear models is \cite{Weisberg:2005}.
+
+If the conditional distribution is not Gaussian, other techniques may prove more useful. For example, if the conditional distribution is Laplacian, we may use least absolute deviation regression instead of least squares \cite{Birkes:1993}. Even if we believe the distribution is Gaussian, but the cardinality of the set of features is high relative to the number of observations, linear regression may be overly sensitive to errors in the data. Various forms of regularization including ridge regression or the lasso \cite{Tibs:96} may give better models at the expense of introducing bias. These strategies may be thought of as imposing a Bayesian prior on the parameters $\beta$. For example, the lasso may be formulated as the problem:
+\begin{displaymath}
+        \begin{array}{ll}
+            \mbox{minimize} & \sum_{i=1}^n \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2 + \lambda \cdot \| \beta \|_1
+        \end{array}
+\end{displaymath}
+
+Yet another approach to extending linear models was introduced by \cite{NW:72} and discussed in detail in \cite{MN:1983}. Their formulation extends the linear model in a few ways. The conditional distribution is not assumed to be Gaussian. Common alternatives include the binomial and Poisson distributions. The mean of the distribution is permitted to depend on the features in a more complicated way, via the introduction of a \textit{link function}, $g$: $\mu(x) = g^{-1}(\eta(x))$, where $\eta(x) = \nu(x)^T \beta$. When $g(x) = x$, this recovers the same relationship between the features and $\mu$ assumed in the linear model, but other link functions may be used like the logistic function $g(x) = \log(x / (1-x))$. Finally, the variance is sometimes permitted to depend on $x$ instead of being constant. Such models are called Generalized Linear Models (GLMs). Fitting such models is accomplished via maximum likelihood estimation:
+\begin{displaymath}
+        \begin{array}{ll}
+            \mbox{minimize} & \sum_{i=1}^n \ell\left( \beta; x^{(i)}, y^{(i)}\right) + r(\beta),
+        \end{array}
+\end{displaymath}
+where $r(\beta)$ is a regularization term on $\beta$, such as in the lasso. For many choices of distribution family and link function, the corresponding optimization problem is convex. However, in all but the simplest cases, only asymptotic or nonparametric estimates of confidence intervals are available.
+
+Finally, Generalized Additive Models (GAMs) extend GLMs by permitting $\eta(x)$ to be a nonparametric function of the features: $\eta(x) = \sum_{i=1}^p h_i (x_i)$, where $h_i$ are smooth functions. When $h_i(x_i) = \beta_i x_i$, the linear model is recovered (all of the parametric dependencies discussed with regards to $\nu$  are still possible here of course, but the idea is that the data itself should tell us the form of the relationship). Typically the $h_i$ functions are chosen to be some sort of spline, such as a natural cubic spline. GAMs are also fit via MLE, and many practical problems can be formulated as convex optimization problems.
+
+(Reference GAM, GAMr) regularized GAMs 
+
+\section{The Alternating Direction Method of Multipliers}
+\label{sec:admm}
+
+\section{Software Architecture}
+\label{sec:arch}
+
+\section*{Acknowledgments}
+
+This is an example of an unnumbered section.
+
+\newpage
+\bibliography{gamdist}
+
+\end{document}
