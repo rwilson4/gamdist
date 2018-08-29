@@ -28,7 +28,7 @@ This paper introduces a Python library called \texttt{gamdist}, which uses a dis
 \section{Generalized Additive Models}
 \label{sec:gam}
 
-The primary goal of \texttt{gamdist} is the estimation of certain aspects of the joint distribution of a collection of one or more random variables $X$ called \textit{features} and a random variable $Y$ we will call the \textit{response}. Specifically, we are interested in the conditional distribution of $Y \given X$. Perhaps the simplest approach is the linear model, which assumes $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$. This notation captures three key assumptions of the linear model. First, the conditional distribution is Gaussian for all values of $X$. Second, the mean of the distribution depends on the features $X$ in a fairly specific way discussed below. Third, the variance is the same for all values of $X$.
+The primary goal of \texttt{gamdist} is the estimation of certain aspects of the joint distribution of a collection of one or more random variables $X$ called \textit{features} and a random variable $Y$ we will call the \textit{response}. Specifically, we are interested in the conditional distribution of $Y \given X$. Perhaps the simplest approach is the linear model, which assumes $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$. This notation captures three key assumptions of the linear model. First, the conditional distribution is Gaussian for all values of $X$. Second, the mean of the distribution depends on the features $X$ in a fairly specific way discussed below. Third, the variance is the same for all values of $X$. These assumptions are all loosened in various generalizations of the linear model used in \texttt{gamdist}.
 
 If we choose $\nu(x) = x$, then the assumption is that $\mu(x) = x^T \beta$, and the mean depends linearly on the features; however, the \textit{linear} in \textit{linear model} refers to the dependence on $\beta$, not on the features. It is common to include a constant term in $\nu(x)$ to account for an affine dependency between the features and the response. For example, $\nu(x) = \begin{bmatrix} 1 & x_1 & x_2 & \cdots \end{bmatrix}^T$. We might incorporate quadratic terms to capture nonlinear dependencies including interactions, such as $\nu(x) = \begin{bmatrix}x_1 & x_2 & x_1^2 & x_1 \cdot x_2 & x_2^2 & \cdots \end{bmatrix}^T$. Or we might include more exotic transformations of the features, like $\nu(x) = \begin{bmatrix} \log(x_1) & \sin(x_2) & \cdots \end{bmatrix}$. These models are nonlinear in the features, but linear in the parameters $\beta$; however, the linear model will only incorporate transformations that we explicitly include.
 
@@ -40,46 +40,54 @@ Another common situation is when some or all of the features are categorical. Fo
        \begin{bmatrix} 0 & 0 & 1 \end{bmatrix}^T & \textrm{if $x = $ blue.}
    \end{cases}
 \end{displaymath}
-Alternative approaches to encoding categorical variables are common and useful in different circumstances \cite{Agresti:2012}. We see that the simple linear model is applicable to a wide range of problems, even those that may not appear linear at first glance.
+Alternative approaches to encoding categorical variables are common and useful in different circumstances. We see that the simple linear model is applicable to a wide range of problems, even those that may not appear linear at first glance.
 
-Fitting a linear model to a set of observations is called linear regression, and is accomplished by solving a least squares optimization problem. This is an example of maximum likelihood estimation (MLE), which is the unifying approach used throughout \texttt{gamdist}. It is worth formulating this optimization problem so that we may see how it evolves as we consider more general scenarios.
+Fitting a linear model to a set of observations is called linear regression, and is accomplished by solving a least squares optimization problem. This is an example of maximum likelihood estimation (MLE), itself a special case of maximum a priori (MAP) estimation, which is the unifying approach used throughout \texttt{gamdist}. It is worth formulating this optimization problem so that we may see how it evolves as we consider more general scenarios.
 
-Suppose we have $n$ observations of the form $\{ (x^{(i)}, \,y^{(i)} ) \}_{i=1, \ldots, n}$. We assume these observations are independent and drawn from the same (unknown) joint distribution (this assumption is loosened in random effects or mixed effects models which are not considered here). Under the linear model, $Y \given X = x^{(i)} \sim \normal (\mu(x^{(i)}), \sigma^2)$. The likelihood of a particular observation is
+Suppose we have $n$ observations of the form $\{ (x^{(i)}, \,y^{(i)} ) \}_{i=1, \ldots, n}$. We assume these observations are independent and drawn from the same (unknown) joint distribution.\footnote{This assumption is loosened in random effects or mixed effects models which are not considered here; see \cite{Stroup:2012}.} Under the assumptions of the linear model, $Y \given X = x^{(i)} \sim \normal (\mu(x^{(i)}), \sigma^2)$. The likelihood of a particular observation is
 \begin{displaymath}
     \mathcal{L}(\beta; x^{(i)}, y^{(i)}) = \frac{1}{\sqrt{2\pi \sigma^2}} \cdot \exp\left( -\frac{1}{2 \sigma^2} \left(y^{(i)} - \nu \left( x^{(i)} \right)^T \beta \right)^2 \right).
 \end{displaymath}
-Note that by convention the likelihood is interpreted as a function of $\beta$ parameterized by the observation $(x^{(i)}, y^{(i)})$. The likelihood of the entire set of observations is the product of the likelihoods of the individual observations. The log-likelihood is the sum of the log-likelihoods of the individual observations:
+Note that by convention the likelihood is interpreted as a function of $\beta$ parameterized by the observation $(x^{(i)}, y^{(i)})$. The likelihood of the entire set of observations is the product of the likelihoods of the individual observations: $\mathcal{L}(\beta; x, y) = \Pi_{i=1}^n \mathcal{L}(\beta; x^{(i)}, y^{(i)})$. The log-likelihood is the sum of the log-likelihoods of the individual observations:
 \begin{displaymath}
-   \ell(\beta; x, y) = -n/2 \log(2\pi \sigma^2) - \frac{1}{2\sigma^2} \sum_{i=1}^n \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2.
+   \ell(\beta; x, y) = \log \mathcal{L}(\beta; x, y) = -n/2 \log(2\pi \sigma^2) - \frac{1}{2\sigma^2} \sum_{i=1}^n \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2.
 \end{displaymath}
 Maximizing the likelihood is the same as maximizing the log-likelihood, and if we are only interested in estimating $\beta$, this is equivalent to the problem
 \begin{displaymath}
         \begin{array}{ll}
-            \mbox{minimize} & \sum_{i=1}^n \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2,
+            \mbox{minimize} & {\displaystyle \sum_{i=1}^n} \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2,
         \end{array}
 \end{displaymath}
-where the variable is $\beta$ and $y^{(i)}$ and $\nu(x^{(i)})$ are data.
+where the variable is $\beta$ and $y^{(i)}$ and $\nu(x^{(i)})$ are data. An elementary result in optimization theory is that a unique solution exists if and only if $V^T V$ is full rank, where the $i$th row of $V$ is equal to $\nu(x^{(i)})^T$. In that case, the optimal $\beta$ satisfies the so-called normal equations:
+\begin{displaymath}
+    V^T V \hat{\beta} = V^T  y.
+\end{displaymath}
 
-If we assume the model is correct (that is, that the conditional distribution really has the assumed form), exact formulae exist for confidence intervals on the parameters $\beta$. If the variance is unknown, it too can be estimated from the data. We can employ hypothesis tests against the null hypothesis that some or all of the components of $\beta$ are zero. We can apply the resulting model to new data assumed to be drawn from the same joint distribution to compute confidence intervals on the response, $Y \given X = x_\textrm{new}$ or the mean of this distribution, $\mu(x_\textrm{new})$. These are immensely valuable tools in the analysis of data and the application of data to predictions. A good reference on linear models is \cite{Weisberg:2005}.
+If we assume the model is correct (that is, that the conditional distribution really has the assumed form), exact formulae exist for confidence intervals on the parameters $\beta$. If the variance is unknown, it too can be estimated from the data. We can employ hypothesis tests against the null hypothesis that some or all of the components of $\beta$ are zero. We can apply the resulting model to new data assumed to be drawn from the same joint distribution to compute confidence intervals on the response, $Y \given X = x_\textrm{new}$ or the mean of this distribution, $\mu(x_\textrm{new})$. These are immensely valuable tools in the analysis of data and the application of data to predictions. A good reference on linear models is \cite{Weisberg:2005}. Useful results are collected in Appendix~\ref{app:linear_model}.
 
-If the conditional distribution is not Gaussian, other techniques may prove more useful. For example, if the conditional distribution is Laplacian, we may use least absolute deviation regression instead of least squares \cite{Birkes:1993}. Even if we believe the distribution is Gaussian, but the cardinality of the set of features is high relative to the number of observations, linear regression may be overly sensitive to errors in the data. Various forms of regularization including ridge regression or the lasso \cite{Tibs:96} may give better models at the expense of introducing bias. These strategies may be thought of as imposing a Bayesian prior on the parameters $\beta$. For example, the lasso may be formulated as the problem:
+Even if the assumptions underlying the linear model are correct, if the noise is high, or if the number of features is large relative to the number of observations, we may use regularization to improve both the estimates of $\beta$ and predictions based on the estimated model. Regularization reduces the sensitivity of the estimates to noise at the expense of introducing bias, and may be thought of as imposing a Bayesian prior on the parameters $\beta$. Some of the most common forms of regularization include ridge regression and the lasso \cite{Tibs:96}. For example, the lasso may be formulated as the problem:
 \begin{displaymath}
         \begin{array}{ll}
-            \mbox{minimize} & \sum_{i=1}^n \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2 + \lambda \cdot \| \beta \|_1
+            \mbox{minimize} & {\displaystyle \sum_{i=1}^n} \left( y^{(i)} - \nu \left(x^{(i)} \right)^T \beta \right)^2 + \lambda \cdot \| \beta \|_1,
         \end{array}
 \end{displaymath}
+but this problem does not have a closed-form solution. Moreover, introducing regularization means the formulation is no longer a maximum likelihood estimation problem. Instead, it is a maximum a priori estimation problem. MLE problems have some statistical properties that MAP estimation problems do not possess.
+
+If the constant variance assumption does not hold, but the dependence is known, then Weighted Least Squares.
+
+If the conditional distribution is not Gaussian, other techniques may prove more useful. For example, if the conditional distribution is Laplacian, we may use least absolute deviation regression instead of least squares \cite{Birkes:1993}. Like with the lasso, there are no exact formulae for statistical inference in this context and we must settle for an asymptotic or non-parametric approach such as the bootstrap \cite{Efron:1993}.
 
 Yet another approach to extending linear models was introduced by \cite{NW:72} and discussed in detail in \cite{MN:1983}. Their formulation extends the linear model in a few ways. The conditional distribution is not assumed to be Gaussian. Common alternatives include the binomial and Poisson distributions. The mean of the distribution is permitted to depend on the features in a more complicated way, via the introduction of a \textit{link function}, $g$: $\mu(x) = g^{-1}(\eta(x))$, where $\eta(x) = \nu(x)^T \beta$. When $g(x) = x$, this recovers the same relationship between the features and $\mu$ assumed in the linear model, but other link functions may be used like the logistic function $g(x) = \log(x / (1-x))$. Finally, the variance is sometimes permitted to depend on $x$ instead of being constant. Such models are called Generalized Linear Models (GLMs). Fitting such models is accomplished via maximum likelihood estimation:
 \begin{displaymath}
         \begin{array}{ll}
-            \mbox{minimize} & \sum_{i=1}^n \ell\left( \beta; x^{(i)}, y^{(i)}\right) + r(\beta),
+            \mbox{minimize} & {\displaystyle \sum_{i=1}^n} \ell\left( \beta; x^{(i)}, y^{(i)}\right) + r(\beta),
         \end{array}
 \end{displaymath}
-where $r(\beta)$ is a regularization term on $\beta$, such as in the lasso. For many choices of distribution family and link function, the corresponding optimization problem is convex. However, in all but the simplest cases, only asymptotic or nonparametric estimates of confidence intervals are available.
+where $r(\beta)$ is a regularization term on $\beta$, such as in the lasso. For many choices of distribution family and link function, the corresponding optimization problem is convex.
 
-Finally, Generalized Additive Models (GAMs) extend GLMs by permitting $\eta(x)$ to be a nonparametric function of the features: $\eta(x) = \sum_{i=1}^p h_i (x_i)$, where $h_i$ are smooth functions. When $h_i(x_i) = \beta_i x_i$, the linear model is recovered (all of the parametric dependencies discussed with regards to $\nu$  are still possible here of course, but the idea is that the data itself should tell us the form of the relationship). Typically the $h_i$ functions are chosen to be some sort of spline, such as a natural cubic spline. GAMs are also fit via MLE, and many practical problems can be formulated as convex optimization problems.
+Introduced by \cite{HT:86}, Generalized Additive Models (GAMs) extend GLMs by permitting $\eta(x)$ to be a nonparametric function of the features: $\eta(x) = \sum_{i=1}^p h_i (x_i)$, where $h_i$ are smooth functions. When $h_i(x_i) = \beta_i x_i$, the linear model is recovered (all of the parametric dependencies discussed with regards to $\nu$  are still possible here of course, but the idea is that the data itself should tell us the form of the relationship). Typically the $h_i$ functions are chosen to be some sort of spline, such as a natural cubic spline. GAMs are also fit via MLE, and many practical problems can be formulated as convex optimization problems.
 
-(Reference GAM, GAMr) regularized GAMs 
+(Reference GAM, GAMr, Casella and Berger, Seber) regularized GAMs 
 
 \section{The Alternating Direction Method of Multipliers}
 \label{sec:admm}
@@ -90,6 +98,49 @@ Finally, Generalized Additive Models (GAMs) extend GLMs by permitting $\eta(x)$ 
 \section*{Acknowledgments}
 
 This is an example of an unnumbered section.
+
+\appendix
+
+\section{Properties of the Linear Model}
+\label{app:linear_model}
+
+In this section, we state various useful facts (without proof) regarding the linear model. For details, see \cite{Weisberg:2005}, CB, GAMr.
+
+Suppose $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$ and $\nu(x) \in \reals^p$. Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$, and assume $V^T V$ is full rank. Let $\hat{\beta} = (V^T V)^{-1} V^T y$. Then
+\begin{equation}
+   \hat{\beta} \sim \normal (\beta, \sigma^2 (V^T V)^{-1}).
+\end{equation}
+Specifically, $\hat{\beta}$ has a multivariate normal distribution, and $\hat{\beta}$ is an unbiased estimate of $\beta$. It is also a \textit{consistent} estimate of $\beta$, meaning that $\hat{\beta}$ converges in probability to $\beta$, as $n$ increases without limit. It is also the best linear unbiased estimate of $\beta$: any other linear, unbiased estimates have higher variance than $\hat{\beta}$.
+
+If $\sigma^2$ is unknown, it may be estimated from the data. Let
+\begin{equation}
+   \hat{\sigma}^2 = \frac{\| y - V \hat{\beta} \|_2^2}{n-p}.
+\end{equation}
+Then $(n-p) \hat{\sigma}^2 / \sigma^2 \sim \chi_{n-p}^2$. Suppose $\Prob\{ \chi_{n-p}^2 \in (\ell, u) \} = \alpha$; that is, $(\ell, u)$ is a confidence interval (at level $\alpha$) on a $\chi_{n-p}^2$ random variable. Then 
+\begin{equation}
+   \Prob \left\{ \sigma^2 \in \left( \frac{(n-p) \cdot \hat{\sigma}^2}{u}, \frac{(n-p) \cdot \hat{\sigma}^2}{\ell} \right) \right\} = \alpha.
+\end{equation}
+A particularly useful case is when $u \to \infty$, corresponding to $\ell = \Phi^{-1}(1 - \alpha)$, where $\Phi$ is the cumulative distribution function of a $\chi_{n-p}^2$ random variable, in which case $\frac{(n-p) \cdot \hat{\sigma}^2}{\Phi^{-1}(1 - \alpha)}$ is an upper confidence limit on $\sigma^2$, at level $\alpha$.
+
+We may compute confidence intervals on linear combinations of the components of $\beta$ by noting that $c^T \hat{\beta} \sim \normal (c^T \beta, \sigma^2 \cdot c^T (V^T V)^{-1} c)$, and thus
+\begin{displaymath}
+   \frac{c^T \hat{\beta} - c^T \beta}{\sqrt{\sigma^2 \cdot c^T (V^T V)^{-1} c}} \sim \normal(0, 1).
+\end{displaymath}
+Let $\pm z_\alpha$ be the endpoints of a confidence interval on a standard Gaussian random variable at level $\alpha$. Then
+\begin{equation}
+\label{eqn:ci_beta}
+c^T \hat{\beta} \pm z_\alpha \cdot \sqrt{\sigma^2 \cdot c^T (V^T V)^{-1} c}
+\end{equation}
+are the endpoints of a confidence interval on $c^T \beta$. This formula is only computable when $\sigma^2$ is known.
+
+When $\sigma^2$ is unknown,
+\begin{displaymath}
+   \frac{c^T \hat{\beta} - c^T \beta}{\sqrt{\hat{\sigma}^2 \cdot c^T (V^T V)^{-1} c}} \sim t_{n-p},
+\end{displaymath}
+and we may simply replace $z_\alpha$ in Equation~(\ref{eqn:ci_beta}) by the corresponding value for the Student's $t$ distribution with $n-p$ degrees of freedom.
+
+What about simultaneous confidence intervals on multiple components of $\beta$? What about the F-test on the composite hypothesis that all values of $\beta$ are zero vs the alternative that at least one is nonzero? What about confidence intervals on predictions? What about confidence intervals on the mean prediction? What does hypothesis testing look like? What are the relevant hypotheses? How are p-values calculated? How do we do power calculations?
+
 
 \newpage
 \bibliography{gamdist}
