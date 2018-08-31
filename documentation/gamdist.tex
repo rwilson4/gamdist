@@ -30,7 +30,7 @@ This paper introduces a Python library called \texttt{gamdist}, which uses a dis
 
 The primary goal of \texttt{gamdist} is the estimation of certain aspects of the joint distribution of a collection of one or more random variables $X$ called \textit{features} and a random variable $Y$ we will call the \textit{response}. Specifically, we are interested in the conditional distribution of $Y \given X$. Perhaps the simplest approach is the linear model, which assumes $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$. This notation captures three key assumptions of the linear model. First, the conditional distribution is Gaussian for all values of $X$. Second, the mean of the distribution depends on the features $X$ in a fairly specific way discussed below. Third, the variance is the same for all values of $X$. These assumptions are all loosened in various generalizations of the linear model used in \texttt{gamdist}.
 
-If we choose $\nu(x) = x$, then the assumption is that $\mu(x) = x^T \beta$, and the mean depends linearly on the features; however, the \textit{linear} in \textit{linear model} refers to the dependence on $\beta$, not on the features. It is common to include a constant term in $\nu(x)$ to account for an affine dependency between the features and the response. For example, $\nu(x) = \begin{bmatrix} 1 & x_1 & x_2 & \cdots \end{bmatrix}^T$. We might incorporate quadratic terms to capture nonlinear dependencies including interactions, such as $\nu(x) = \begin{bmatrix}x_1 & x_2 & x_1^2 & x_1 \cdot x_2 & x_2^2 & \cdots \end{bmatrix}^T$. Or we might include more exotic transformations of the features, like $\nu(x) = \begin{bmatrix} \log(x_1) & \sin(x_2) & \cdots \end{bmatrix}$. These models are nonlinear in the features, but linear in the parameters $\beta$; however, the linear model will only incorporate transformations that we explicitly include.
+If we choose $\nu(x) = x$, then the assumption is that $\mu(x) = x^T \beta$, and the mean depends linearly on the features; however, the \textit{linear} in \textit{linear model} refers to the dependence on $\beta$, not on the features. It is common to include a constant term in $\nu(x)$ to account for an affine dependency between the features and the response. For example, $\nu(x) = \begin{bmatrix} 1 & x_1 & x_2 & \cdots \end{bmatrix}^T$. We might incorporate quadratic terms to capture nonlinear dependencies including interactions, such as $\nu(x) = \begin{bmatrix}x_1 & x_2 & x_1^2 & x_1 \cdot x_2 & x_2^2 & \cdots \end{bmatrix}^T$. Or we might include more exotic transformations of the features, like $\nu(x) = \begin{bmatrix} \log(x_1) & \sin(x_2) & \cdots \end{bmatrix}^T$. These models are nonlinear in the features, but linear in the parameters $\beta$; however, the linear model will only incorporate transformations that we explicitly include.
 
 Another common situation is when some or all of the features are categorical. For example, consider a model with a single feature corresponding to a person's favorite color, and suppose choices are limited to red, green, and blue. The model would consist of the average responses for people who prefer any particular color. We might support such a model by defining
 \begin{displaymath}
@@ -42,7 +42,7 @@ Another common situation is when some or all of the features are categorical. Fo
 \end{displaymath}
 Alternative approaches to encoding categorical variables are common and useful in different circumstances. We see that the simple linear model is applicable to a wide range of problems, even those that may not appear linear at first glance.
 
-Fitting a linear model to a set of observations is called linear regression, and is accomplished by solving a least squares optimization problem. This is an example of maximum likelihood estimation (MLE), itself a special case of maximum a priori (MAP) estimation, which is the unifying approach used throughout \texttt{gamdist}. It is worth formulating this optimization problem so that we may see how it evolves as we consider more general scenarios.
+Fitting a linear model to a set of observations is called linear regression, and is accomplished by solving a least squares optimization problem. This is an example of maximum likelihood estimation (MLE), itself a special case of maximum a posteriori (MAP) estimation, which is the unifying approach used throughout \texttt{gamdist}. It is worth formulating this optimization problem so that we may see how it evolves as we consider more general scenarios.
 
 Suppose we have $n$ observations of the form $\{ (x^{(i)}, \,y^{(i)} ) \}_{i=1, \ldots, n}$. We assume these observations are independent and drawn from the same (unknown) joint distribution.\footnote{This assumption is loosened in random effects or mixed effects models which are not considered here; see \cite{Stroup:2012}.} Under the assumptions of the linear model, $Y \given X = x^{(i)} \sim \normal (\mu(x^{(i)}), \sigma^2)$. The likelihood of a particular observation is
 \begin{displaymath}
@@ -64,6 +64,8 @@ where the variable is $\beta$ and $y^{(i)}$ and $\nu(x^{(i)})$ are data. An elem
 \end{displaymath}
 
 If we assume the model is correct (that is, that the conditional distribution really has the assumed form), exact formulae exist for confidence intervals on the parameters $\beta$. If the variance is unknown, it too can be estimated from the data. We can employ hypothesis tests against the null hypothesis that some or all of the components of $\beta$ are zero. We can apply the resulting model to new data assumed to be drawn from the same joint distribution to compute confidence intervals on the response, $Y \given X = x_\textrm{new}$ or the mean of this distribution, $\mu(x_\textrm{new})$. These are immensely valuable tools in the analysis of data and the application of data to predictions. A good reference on linear models is \cite{Weisberg:2005}. Useful results are collected in Appendix~\ref{app:linear_model}.
+
+We can loosen the assumption of constant variance slightly without materially affecting the inferences that may be drawn. Suppose the $i$th observation has variance $\sigma^2 / \phi^{(i)}$, where $\phi^{(i)}$ is a known quantity, but $\sigma^2$ may or may not be known a priori.
 
 Even if the assumptions underlying the linear model are correct, if the noise is high, or if the number of features is large relative to the number of observations, we may use regularization to improve both the estimates of $\beta$ and predictions based on the estimated model. Regularization reduces the sensitivity of the estimates to noise at the expense of introducing bias, and may be thought of as imposing a Bayesian prior on the parameters $\beta$. Some of the most common forms of regularization include ridge regression and the lasso \cite{Tibs:96}. For example, the lasso may be formulated as the problem:
 \begin{displaymath}
@@ -104,23 +106,27 @@ This is an example of an unnumbered section.
 \section{Properties of the Linear Model}
 \label{app:linear_model}
 
-In this section, we state various useful facts (without proof) regarding the linear model. For details, see \cite{Weisberg:2005}, CB, GAMr.
+In this section, we state various useful facts (without proof) regarding the linear model. For details, see \cite{Weisberg:2005}, \cite{Seber:2003}, \cite{Wood:2017}, and \cite{CB:2001}. The goal of this section is twofold: to gather formulae used in \texttt{gamdist}, and to illustrate that regression analysis does not end with model fitting. In fact, it is often desirable to quantify the uncertainty in fitted model parameters, check the assumptions of the linear model through examination of the residuals, perform model selection, and quantify the uncertainty associated with predictions. These are worthwhile goals in any regression analysis.
 
-Suppose $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$ and $\nu(x) \in \reals^p$. Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$, and assume $V^T V$ is full rank. Let $\hat{\beta} = (V^T V)^{-1} V^T y$. Then
+Suppose $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$ and $\nu(x) \in \reals^p$ is a known function. Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$, and assume $V$ is full rank. Let $\hat{\beta} = (V^T V)^{-1} V^T y$. Then
 \begin{equation}
    \hat{\beta} \sim \normal (\beta, \sigma^2 (V^T V)^{-1}).
 \end{equation}
-Specifically, $\hat{\beta}$ has a multivariate normal distribution, and $\hat{\beta}$ is an unbiased estimate of $\beta$. It is also a \textit{consistent} estimate of $\beta$, meaning that $\hat{\beta}$ converges in probability to $\beta$, as $n$ increases without limit. It is also the best linear unbiased estimate of $\beta$: any other linear, unbiased estimates have higher variance than $\hat{\beta}$.
+Specifically, $\hat{\beta}$ has a multivariate normal distribution, and $\hat{\beta}$ is an unbiased estimate of $\beta$. It is also a \textit{consistent} estimate of $\beta$, meaning that $\hat{\beta}$ converges in probability to $\beta$, as $n$ increases without limit. It is also the best linear unbiased estimate of $\beta$: any other linear, unbiased estimates have higher variance than $\hat{\beta}$ \cite[\S~1.3.9]{Wood:2017}.
 
 If $\sigma^2$ is unknown, it may be estimated from the data. Let
 \begin{equation}
    \hat{\sigma}^2 = \frac{\| y - V \hat{\beta} \|_2^2}{n-p}.
 \end{equation}
-Then $(n-p) \hat{\sigma}^2 / \sigma^2 \sim \chi_{n-p}^2$. Suppose $\Prob\{ \chi_{n-p}^2 \in (\ell, u) \} = \alpha$; that is, $(\ell, u)$ is a confidence interval (at level $\alpha$) on a $\chi_{n-p}^2$ random variable. Then 
+Then $(n-p) \hat{\sigma}^2 / \sigma^2 \sim \chi_{n-p}^2$ \cite[\S~3.4.4]{Weisberg:2005}. This indicates that $\hat{\sigma}^2$ is an unbiased estimate of $\sigma^2$. Suppose $\Prob\{ \chi_{n-p}^2 \in (\ell, u) \} = \alpha$; that is, $(\ell, u)$ is a confidence interval (at level $\alpha$) on a $\chi_{n-p}^2$ random variable. Then 
 \begin{equation}
    \Prob \left\{ \sigma^2 \in \left( \frac{(n-p) \cdot \hat{\sigma}^2}{u}, \frac{(n-p) \cdot \hat{\sigma}^2}{\ell} \right) \right\} = \alpha.
 \end{equation}
-A particularly useful case is when $u \to \infty$, corresponding to $\ell = \Phi^{-1}(1 - \alpha)$, where $\Phi$ is the cumulative distribution function of a $\chi_{n-p}^2$ random variable, in which case $\frac{(n-p) \cdot \hat{\sigma}^2}{\Phi^{-1}(1 - \alpha)}$ is an upper confidence limit on $\sigma^2$, at level $\alpha$.
+A particularly useful case is when $u \to \infty$, corresponding to $\ell = \Phi_{\chi_{n-p}^2}^{-1}(1 - \alpha)$, where $\Phi_{\chi_{n-p}^2}$ is the cumulative distribution function of a $\chi_{n-p}^2$ random variable, in which case 
+\begin{displaymath}
+   \Prob\left\{\sigma^2 < \frac{(n-p) \cdot \hat{\sigma}^2}{\Phi_{\chi_{n-p}^2}^{-1}(1 - \alpha)} \right\} = \alpha,
+\end{displaymath}
+corresponding to an upper confidence limit on $\sigma^2$, at level $\alpha$.
 
 We may compute confidence intervals on linear combinations of the components of $\beta$ by noting that $c^T \hat{\beta} \sim \normal (c^T \beta, \sigma^2 \cdot c^T (V^T V)^{-1} c)$, and thus
 \begin{displaymath}
@@ -131,15 +137,65 @@ Let $\pm z_\alpha$ be the endpoints of a confidence interval on a standard Gauss
 \label{eqn:ci_beta}
 c^T \hat{\beta} \pm z_\alpha \cdot \sqrt{\sigma^2 \cdot c^T (V^T V)^{-1} c}
 \end{equation}
-are the endpoints of a confidence interval on $c^T \beta$. This formula is only computable when $\sigma^2$ is known.
-
-When $\sigma^2$ is unknown,
+are the endpoints of a confidence interval on $c^T \beta$. This formula is only computable when $\sigma^2$ is known a priori. When $\sigma^2$ is unknown, we need a formula in terms of its estimated value, $\hat{\sigma}^2$, leading to
 \begin{displaymath}
-   \frac{c^T \hat{\beta} - c^T \beta}{\sqrt{\hat{\sigma}^2 \cdot c^T (V^T V)^{-1} c}} \sim t_{n-p},
+   \frac{c^T \hat{\beta} - c^T \beta}{\sqrt{\hat{\sigma}^2 \cdot c^T (V^T V)^{-1} c}} \sim t_{n-p}.
 \end{displaymath}
-and we may simply replace $z_\alpha$ in Equation~(\ref{eqn:ci_beta}) by the corresponding value for the Student's $t$ distribution with $n-p$ degrees of freedom.
+Thus, when $\sigma^2$ is unknown, a confidence interval on $c^T \beta$, at level $\alpha$, has endpoints
+\begin{equation}
+\label{eqn:ci_beta_estimated_variance}
+c^T \hat{\beta} \pm t_{n-p; \alpha} \cdot \sqrt{\hat{\sigma}^2 \cdot c^T (V^T V)^{-1} c},
+\end{equation}
+where $\pm t_{n-p; \alpha}$ are the endpoints of a confidence interval, at level $\alpha$, on a Student's $t$ distribution with $n-p$ degrees of freedom.
 
-What about simultaneous confidence intervals on multiple components of $\beta$? What about the F-test on the composite hypothesis that all values of $\beta$ are zero vs the alternative that at least one is nonzero? What about confidence intervals on predictions? What about confidence intervals on the mean prediction? What does hypothesis testing look like? What are the relevant hypotheses? How are p-values calculated? How do we do power calculations?
+These facts can be used for testing $H_0: c^T \beta = 0$ vs.~the alternative, $H_1: c^T \beta \neq 0$ for a particular value of $c$. Under the null hypothesis,
+\begin{equation}
+\label{eqn:hts_olc}
+   T_c := \frac{c^T \hat{\beta}}{\sqrt{\hat{\sigma}^2 \cdot c^T (V^T V)^{-1} c}} \sim t_{n-p},
+\end{equation}
+so the p-value associated with the test is simply $\Phi_{t_{n-p}}(-|T_c|) + (1 - \Phi_{t_{n-p}}(|T_c|))$, where $\Phi_{t_{n-p}}$ is the cumulative distribution function for a Student's $t$ distribution with $n-p$ degrees of freedom.
+
+As special cases of the above discussion, when $c = \hat{e}_i$, we get confidence intervals for, and hypothesis tests regarding, $\beta_i$. When $c = \nu(x_\textrm{new})$, we get confidence intervals for $\mu(x_\textrm{new})$; that is, the mean response of the model applied to a new data point. Confidence intervals on $Y \given X = x_\textrm{new}$ involve an extra component of uncertainty due to the variance of the conditional distribution: even if we knew $\mu(x_\textrm{new})$ perfectly, the conditional distribution still has variance $\sigma^2$. This leads to an extra term of $\hat{\sigma}^2$ in Equation~(\ref{eqn:ci_beta_estimated_variance}):
+\begin{displaymath}
+\nu(x_\textrm{new})^T \hat{\beta} \pm t_{n-p; \alpha} \cdot \sqrt{\hat{\sigma}^2 \cdot (1 + \nu(x_\textrm{new})^T (V^T V)^{-1} \nu(x_\textrm{new}))},
+\end{displaymath}
+which are the endpoints of a confidence interval on $Y$ \cite[\S 3.6]{Weisberg:2005}.
+
+When we want simultaneous confidence intervals on multiple linear combinations of $\beta$, we must adjust for the multiple comparisons. There is more than one approach to doing so. Suppose we are interested in $C \beta$, where $C \in \reals^{q \times p}$. Then
+\begin{displaymath}
+    C \hat{\beta} \sim \normal \left( C \beta, \sigma^2 \cdot C (V^T V)^{-1} C^T \right),
+\end{displaymath}
+which shows that $C \hat{\beta}$ is an unbiased estimator for $C \beta$, and that $C \hat{\beta}$ is normally distributed. Note that when $C = V$, we get the distribution of the fitted means, $\hat{\mu}$, since $\hat{\mu} := V \hat{\beta}$. Suppose we are interested in simultaneous confidence intervals on $C\beta$ at level $\alpha$. The Bonferroni correction defines $\alpha^\prime = 1 - (1 - \alpha) / q$ and then simply uses the endpoints in~(\ref{eqn:ci_beta_estimated_variance}) for each individual component of $C\beta$, substituting $\alpha^\prime$ for $\alpha$. For example, suppose we wanted a simultaneous $95\%$ confidence interval on $C\beta$, where $C$ has $q=5$ rows. Then $\alpha = 0.95$ and $\alpha^\prime = 0.99$. So we would compute $99\%$ confidence intervals on each component $c^{(i)} \beta$, where $c^{(i)}$ is the $i$th row of $C$. This approach is simple but overly conservative in many cases \cite[\S~9.1.3]{Weisberg:2005}.
+
+
+
+
+
+
+
+Tukey's method; Scheffe's method.
+
+
+
+
+
+
+
+
+
+
+
+Now suppose $C$ is full rank, and that $q < p$. We would like to test the hypothesis $C \beta = d$. As derived in \cite[\S~1.3.4]{Wood:2017},
+\begin{displaymath}
+   T_C := \frac{1}{q} (C \hat{\beta} - d)^T (\hat{\sigma}^2 \cdot C (V^T V)^{-1} C^T)^{-1} (C \hat{\beta} - d) \sim F_{q, n-p},
+\end{displaymath}
+where $F_{q, n-p}$ is Snedecor's $F$ distribution with $q$ and $n-p$ degrees of freedom in the numerator and denominator, resp. This relationship generalizes~(\ref{eqn:hts_olc}) since an $F$ distribution with one degree of freedom in the numerator is equivalent to a $t^2$ distribution \cite[\S~3.5.3]{Weisberg:2005}. The p-value for this test would be $\Phi_{F_{q, n-p}}(-|T_C|) + (1 - \Phi_{F_{q, n-p}}(|T_C|))$, where $\Phi_{F_{q, n-p}}$ is the cumulative distribution function for an $F$ distribution with the specified degrees of freedom.
+
+This test statistic is useful in several situations. Suppose we are considering a sequence of nested models: a model consisting only of a grand mean (in which $\mu$ does not depend on the features at all), a model consisting only of main effects, a model with first-order interactions, and a model with higher-order interactions. We may wish to check $H_0$: the model consists only of main effects vs. $H_1$: interactions are present. This amounts to checking whether $C \beta = 0$, where $C \beta$ are the components of $\beta$ corresponding to the interaction terms. Or we may want to check $H_0: \mu(x) = \mu$ vs. $H_1: \mu(x) \neq \mu$, where $\mu$ is the grand mean. In this case, we are checking whether there is any evidence of the mean response depending on the features. Of course, checking multiple hypotheses is subject to the multiple comparisons problem discussed above.
+
+If a particular feature is categorical with at least three levels, it will consist of at least two parameters. We would typically want to test whether all associated parameters are non-zero, not just one. Or if $\nu(x)$ consists of multiple transformations of a particular feature, like $\nu(x) = \begin{bmatrix} \cdots & x_1 & x_1^2 & \log(x_1) & \cdots \end{bmatrix}^T$, we might want to simultaneously test all the corresponding components of $\beta$ for being non-zero. The $F$-test described here is applicable to these scenarios.
+
+What about simultaneous confidence intervals on multiple components of $\beta$? How do we do power calculations? What about the residuals, $y^{(i)} - \hat{\mu}^{(i)}$? What do we do with the residuals (graph them against the mean response, make a Q-Q plot, standardize them, etc.)
 
 
 \newpage
