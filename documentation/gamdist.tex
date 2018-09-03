@@ -106,19 +106,16 @@ This is an example of an unnumbered section.
 \section{Properties of the Linear Model}
 \label{app:linear_model}
 
-In this section, we state various useful facts (without proof) regarding the linear model. For details, see \cite{Weisberg:2005}, \cite{Seber:2003}, \cite{Wood:2017}, and \cite{CB:2001}. The goal of this section is twofold: to gather formulae used in \texttt{gamdist}, and to illustrate that regression analysis does not end with model fitting. In fact, it is often desirable to quantify the uncertainty in fitted model parameters, check the assumptions of the linear model through examination of the residuals, perform model selection, and quantify the uncertainty associated with predictions. These are worthwhile goals in any regression analysis.
+In this section, we state various useful facts (without proof) regarding the linear model. For details, see \cite{Weisberg:2005}, \cite{Seber:2003}, \cite{Wood:2017}, and \cite{CB:2001}. The goal of this section is twofold: to gather formulae used in \texttt{gamdist}, and to highlight what we typically want to do in a regression analysis, beyond just fitting the model. In fact, it is often desirable to quantify the uncertainty in fitted model parameters, check the assumptions of the model through examination of the residuals, perform model selection, and quantify the uncertainty associated with predictions. The linear model admits \textit{exact} formulae supporting these goals; other types of regression only support asymptotic or approximate formulae.
 
-Suppose $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$ and $\nu(x) \in \reals^p$ is a known function. Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$, and assume $V$ is full rank. Let $\hat{\beta} = (V^T V)^{-1} V^T y$. Then
-\begin{equation}
-   \hat{\beta} \sim \normal (\beta, \sigma^2 (V^T V)^{-1}).
-\end{equation}
+Suppose $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$ and $\nu(x) \in \reals^p$ is a known function. Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$, and assume $V$ is full rank. Let $\hat{\beta} = (V^T V)^{-1} V^T y$. Then $\hat{\beta} \sim \normal (\beta, \mathcal{I}^{-1})$, where $\mathcal{I} = (V^T V) / \sigma^2$ is the Fisher information matrix.
 Specifically, $\hat{\beta}$ has a multivariate normal distribution, and $\hat{\beta}$ is an unbiased estimate of $\beta$. It is also a \textit{consistent} estimate of $\beta$, meaning that $\hat{\beta}$ converges in probability to $\beta$, as $n$ increases without limit. It is also the best linear unbiased estimate of $\beta$: any other linear, unbiased estimates have higher variance than $\hat{\beta}$ \cite[\S~1.3.9]{Wood:2017}.
 
 If $\sigma^2$ is unknown, it may be estimated from the data. Let
 \begin{equation}
    \hat{\sigma}^2 = \frac{\| y - V \hat{\beta} \|_2^2}{n-p}.
 \end{equation}
-Then $(n-p) \hat{\sigma}^2 / \sigma^2 \sim \chi_{n-p}^2$ \cite[\S~3.4.4]{Weisberg:2005}. This indicates that $\hat{\sigma}^2$ is an unbiased estimate of $\sigma^2$. Suppose $\Prob\{ \chi_{n-p}^2 \in (\ell, u) \} = \alpha$; that is, $(\ell, u)$ is a confidence interval (at level $\alpha$) on a $\chi_{n-p}^2$ random variable. Then 
+Then $(n-p) \hat{\sigma}^2 / \sigma^2 \sim \chi_{n-p}^2$, and $\hat{\beta}$ and $\hat{\sigma}^2$ are independent \cite[\S~3.4.4]{Weisberg:2005}. This indicates that $\hat{\sigma}^2$ is an unbiased estimate of $\sigma^2$. Suppose $\Prob\{ \chi_{n-p}^2 \in (\ell, u) \} = \alpha$; that is, $(\ell, u)$ is a confidence interval (at level $\alpha$) on a $\chi_{n-p}^2$ random variable. Then 
 \begin{equation}
    \Prob \left\{ \sigma^2 \in \left( \frac{(n-p) \cdot \hat{\sigma}^2}{u}, \frac{(n-p) \cdot \hat{\sigma}^2}{\ell} \right) \right\} = \alpha.
 \end{equation}
@@ -128,74 +125,102 @@ A particularly useful case is when $u \to \infty$, corresponding to $\ell = \Phi
 \end{displaymath}
 corresponding to an upper confidence limit on $\sigma^2$, at level $\alpha$.
 
-We may compute confidence intervals on linear combinations of the components of $\beta$ by noting that $c^T \hat{\beta} \sim \normal (c^T \beta, \sigma^2 \cdot c^T (V^T V)^{-1} c)$, and thus
-\begin{displaymath}
-   \frac{c^T \hat{\beta} - c^T \beta}{\sqrt{\sigma^2 \cdot c^T (V^T V)^{-1} c}} \sim \normal(0, 1).
-\end{displaymath}
-Let $\pm z_\alpha$ be the endpoints of a confidence interval on a standard Gaussian random variable at level $\alpha$. Then
+We may compute confidence intervals on linear combinations of the components of $\beta$ by noting that $c^T \hat{\beta} \sim \normal (c^T \beta, \| c \|_\mathcal{I}^2)$, where $\| c \|_\mathcal{I}^2 = c^T \mathcal{I}^{-1} c$ is (the square of) the Mahalanobis norm \cite[\S~3.11.1]{Seber:2003}, and thus
+\begin{equation}
+\label{eqn:dist_ctbeta}
+   \frac{c^T \hat{\beta} - c^T \beta}{\|c\|_\mathcal{I}} \sim \normal(0, 1).
+\end{equation}
+Let $z^{1-\alpha/2}$ be the upper $\alpha/2$ quantile of a standard Gaussian random variable. Then
 \begin{equation}
 \label{eqn:ci_beta}
-c^T \hat{\beta} \pm z_\alpha \cdot \sqrt{\sigma^2 \cdot c^T (V^T V)^{-1} c}
+c^T \hat{\beta} \pm z^{1-\alpha/2} \cdot \|c\|_\mathcal{I}
 \end{equation}
-are the endpoints of a confidence interval on $c^T \beta$. This formula is only computable when $\sigma^2$ is known a priori. When $\sigma^2$ is unknown, we need a formula in terms of its estimated value, $\hat{\sigma}^2$, leading to
+are the endpoints of a $100(1-\alpha)\%$ confidence interval on $c^T \beta$. This formula is only computable when $\mathcal{I}$ is computable, which in turn is only possible when $\sigma^2$ is known a priori. When $\sigma^2$ is unknown, we need a formula in terms of its estimated value, $\hat{\sigma}^2$, leading to
 \begin{displaymath}
-   \frac{c^T \hat{\beta} - c^T \beta}{\sqrt{\hat{\sigma}^2 \cdot c^T (V^T V)^{-1} c}} \sim t_{n-p}.
+   \frac{c^T \hat{\beta} - c^T \beta}{\| c \|_{\hat{\mathcal{I}}}} \sim t_{n-p},
 \end{displaymath}
-Thus, when $\sigma^2$ is unknown, a confidence interval on $c^T \beta$, at level $\alpha$, has endpoints
+where $\hat{\mathcal{I}} = V^T V / \hat{\sigma}^2$ is the estimated Fisher information matrix. Thus, when $\sigma^2$ is unknown, a $100(1-\alpha)\%$ confidence interval on $c^T \beta$ has endpoints
 \begin{equation}
 \label{eqn:ci_beta_estimated_variance}
-c^T \hat{\beta} \pm t_{n-p; \alpha} \cdot \sqrt{\hat{\sigma}^2 \cdot c^T (V^T V)^{-1} c},
+c^T \hat{\beta} \pm t_{n-p}^{1-\alpha/2} \cdot \| c \|_{\hat{\mathcal{I}}},
 \end{equation}
-where $\pm t_{n-p; \alpha}$ are the endpoints of a confidence interval, at level $\alpha$, on a Student's $t$ distribution with $n-p$ degrees of freedom.
+where $t_{n-p}^{1-\alpha/2}$ is the upper $\alpha/2$ quantile of a Student's $t$ distribution with $n-p$ degrees of freedom.
 
-These facts can be used for testing $H_0: c^T \beta = 0$ vs.~the alternative, $H_1: c^T \beta \neq 0$ for a particular value of $c$. Under the null hypothesis,
+These facts can be used for testing $H_0: c^T \beta = d$ vs.~the alternative, $H_1: c^T \beta \neq d$ for particular values of $c \in \reals^p$ and $d$. Under the null hypothesis,
 \begin{equation}
 \label{eqn:hts_olc}
-   T_c := \frac{c^T \hat{\beta}}{\sqrt{\hat{\sigma}^2 \cdot c^T (V^T V)^{-1} c}} \sim t_{n-p},
+   T_c := \frac{c^T \hat{\beta} - d}{\| c \|_{\hat{\mathcal{I}}}} \sim t_{n-p},
 \end{equation}
-so the p-value associated with the test is simply $\Phi_{t_{n-p}}(-|T_c|) + (1 - \Phi_{t_{n-p}}(|T_c|))$, where $\Phi_{t_{n-p}}$ is the cumulative distribution function for a Student's $t$ distribution with $n-p$ degrees of freedom.
-
-As special cases of the above discussion, when $c = \hat{e}_i$, we get confidence intervals for, and hypothesis tests regarding, $\beta_i$. When $c = \nu(x_\textrm{new})$, we get confidence intervals for $\mu(x_\textrm{new})$; that is, the mean response of the model applied to a new data point. Confidence intervals on $Y \given X = x_\textrm{new}$ involve an extra component of uncertainty due to the variance of the conditional distribution: even if we knew $\mu(x_\textrm{new})$ perfectly, the conditional distribution still has variance $\sigma^2$. This leads to an extra term of $\hat{\sigma}^2$ in Equation~(\ref{eqn:ci_beta_estimated_variance}):
+so the p-value associated with the test is simply $\Phi_{t_{n-p}}(-|T_c|) + (1 - \Phi_{t_{n-p}}(|T_c|))$, where $\Phi_{t_{n-p}}$ is the cumulative distribution function for a Student's $t$ distribution with $n-p$ degrees of freedom. Under a particular alternative hypothesis, say $c^T \beta = d^\prime$, $T_c$ is distributed as a noncentral Student's $t$ with $n-p$ degrees of freedom and noncentrality parameter $\lambda = (d^\prime-d)/\| c \|_\mathcal{I}$. I could not find a derivation of this, so here is one:
 \begin{displaymath}
-\nu(x_\textrm{new})^T \hat{\beta} \pm t_{n-p; \alpha} \cdot \sqrt{\hat{\sigma}^2 \cdot (1 + \nu(x_\textrm{new})^T (V^T V)^{-1} \nu(x_\textrm{new}))},
+   T_c = \frac{\frac{c^T \hat{\beta} - d^\prime}{\| c \|_\mathcal{I}} + \frac{d^\prime - d}{\| c \|_\mathcal{I}}}{\| c \|_{\hat{\mathcal{I}}} / \| c \|_\mathcal{I}}
+   = \frac{\frac{c^T \hat{\beta} - d^\prime}{\| c \|_\mathcal{I}} + \frac{d^\prime - d}{\| c \|_\mathcal{I}}}{\sqrt{\hat{\sigma}^2 / \sigma^2}}
+   = \frac{\frac{c^T \hat{\beta} - d^\prime}{\| c \|_\mathcal{I}} + \frac{d^\prime - d}{\| c \|_\mathcal{I}}}{\sqrt{\frac{(n-p) \cdot \hat{\sigma}^2 / \sigma^2}{n-p}}}.
+\end{displaymath}
+From Equation~(\ref{eqn:dist_ctbeta}), the first term in the numerator has a standard Gaussian distribution. The second term in the numerator is the noncentrality parameter. The denominator is the square root of a $\chi_{n-p}^2$ random variable divided by its degrees of freedom. The numerator is a function of $\hat{\beta}$ while the denominator is a function of $\hat{\sigma}^2$, so the numerator and denominator are statistically independent. This is precisely the characterization of a noncentral Student's $t$ distribution. For a test of size $\alpha$, we would reject the null if $|T_c| > t_{n-p}^{1-\alpha/2}$. The probability of doing so under a particular alternative hypothesis is the power of the test and is given by:
+\begin{displaymath}
+1 - \Phi_{t_{n-p; \lambda}}(t_{n-p}^{1-\alpha/2}) + \Phi_{t_{n-p; \lambda}}(-t_{n-p}^{1-\alpha/2}),
+\end{displaymath}
+where $\Phi_{t_{n-p; \lambda}}$ is the cumulative distribution function for a noncentral Student's $t$ distribution with $n-p$ degrees of freedom and noncentrality parameter $\lambda = (d^\prime-d)/\| c \|_\mathcal{I}$. Note we need to assume a value of $\sigma^2$ associated with the alternative hypothesis to compute $\| c \|_\mathcal{I}$ for the noncentrality parameter.
+
+As special cases of the above discussion, when $c = \hat{e}_i$, we get confidence intervals for, and hypothesis tests regarding, $\beta_i$. When $c = \nu(x_\textrm{new})$, we get confidence intervals for $\mu(x_\textrm{new})$; that is, the mean response of the model applied to a new data point. Confidence intervals on $Y \given X = x_\textrm{new}$ involve an extra component of uncertainty due to the variance of the conditional distribution: even if we knew $\mu(x_\textrm{new})$ perfectly, the conditional distribution still has variance $\sigma^2$. This leads to an extra term of $\hat{\sigma}^2$ as compared to Equation~(\ref{eqn:ci_beta_estimated_variance}):
+\begin{displaymath}
+\nu(x_\textrm{new})^T \hat{\beta} \pm t_{n-p}^{1-\alpha/2} \cdot \sqrt{\hat{\sigma}^2 + \| \nu(x_\textrm{new}) \|_{\hat{\mathcal{I}}}^2},
 \end{displaymath}
 which are the endpoints of a confidence interval on $Y$ \cite[\S 3.6]{Weisberg:2005}.
 
 When we want simultaneous confidence intervals on multiple linear combinations of $\beta$, we must adjust for the multiple comparisons. There is more than one approach to doing so. Suppose we are interested in $C \beta$, where $C \in \reals^{q \times p}$. Then
 \begin{displaymath}
-    C \hat{\beta} \sim \normal \left( C \beta, \sigma^2 \cdot C (V^T V)^{-1} C^T \right),
+    C \hat{\beta} \sim \normal \left( C \beta, C \mathcal{I}^{-1} C^T \right),
 \end{displaymath}
-which shows that $C \hat{\beta}$ is an unbiased estimator for $C \beta$, and that $C \hat{\beta}$ is normally distributed. Note that when $C = V$, we get the distribution of the fitted means, $\hat{\mu}$, since $\hat{\mu} := V \hat{\beta}$. Suppose we are interested in simultaneous confidence intervals on $C\beta$ at level $\alpha$. The Bonferroni correction defines $\alpha^\prime = 1 - (1 - \alpha) / q$ and then simply uses the endpoints in~(\ref{eqn:ci_beta_estimated_variance}) for each individual component of $C\beta$, substituting $\alpha^\prime$ for $\alpha$. For example, suppose we wanted a simultaneous $95\%$ confidence interval on $C\beta$, where $C$ has $q=5$ rows. Then $\alpha = 0.95$ and $\alpha^\prime = 0.99$. So we would compute $99\%$ confidence intervals on each component $c^{(i)} \beta$, where $c^{(i)}$ is the $i$th row of $C$. This approach is simple but overly conservative in many cases \cite[\S~9.1.3]{Weisberg:2005}.
+which shows that $C \hat{\beta}$ is an unbiased estimator for $C \beta$, and that $C \hat{\beta}$ is normally distributed. Note that when $C = V$, we get the distribution of the fitted means, $\hat{\mu}$, since $\hat{\mu} := V \hat{\beta}$. Suppose we are interested in simultaneous confidence intervals on $C\beta$ at level $\alpha$. The Bonferroni correction defines $\alpha^\prime = \alpha / q$ and then simply uses the endpoints in Equation~(\ref{eqn:ci_beta_estimated_variance}) for each individual component of $C\beta$, substituting $\alpha^\prime$ for $\alpha$. For example, suppose we wanted a simultaneous $95\%$ confidence interval on $C\beta$, where $C$ has $q=5$ rows. Then $\alpha = 0.05$ and $\alpha^\prime = 0.01$. So we would compute $99\%$ confidence intervals on each component $c^{(i)} \beta$, where $c^{(i)}$ is the $i$th row of $C$. This approach is simple but overly conservative in many cases \cite[\S~9.1.3]{Weisberg:2005}.
 
-
-
-
-
-
-
-Tukey's method; Scheffe's method.
-
-
-
-
-
-
-
-
-
-
+Another method, due to Scheff\'e, defines simultaneous confidence intervals for \textit{any} linear function of $C\beta$. This is especially helpful when $q$ is very large (in that case, the Bonferroni correction renders the confidence intervals too wide to be practically useful). Suppose $C$ has rank $r$, and that $A \in \reals^{r \times p}$ is any collection of $r$ linearly independent rows of $C$. We wish to estimate simultaneous confidence intervals on quantities of the form $h^T A \beta$.\footnote{Since the range of $A^T$ is equal to the range of $C^T$, for any vector $h^\prime \in \reals^q$, there exists $h \in \reals^r$ such that $C^T h^\prime = A^T h$.} For example, when $h = \hat{e}_i$, this is simply the $i$th component of $A \beta$, but $h$ can be anything. Then
+\begin{displaymath}
+   h^T A \hat{\beta} \pm (r \cdot F_{r, n-p}^{1-\alpha/2})^{1/2} \cdot \| A^T h \|_{\hat{\mathcal{I}}}
+\end{displaymath}
+is a $100(1-\alpha)\%$ confidence interval on $h^T A \beta$, where $F_{r, n-p}^{1-\alpha/2}$ is the upper $\alpha/2$ quantile of Snedecor's $F$ distribution having $r$ and $n-p$ degrees of freedom in the numerator and denominator, respectively \cite[\S~5.1.1]{Seber:2003}.
 
 Now suppose $C$ is full rank, and that $q < p$. We would like to test the hypothesis $C \beta = d$. As derived in \cite[\S~1.3.4]{Wood:2017},
 \begin{displaymath}
-   T_C := \frac{1}{q} (C \hat{\beta} - d)^T (\hat{\sigma}^2 \cdot C (V^T V)^{-1} C^T)^{-1} (C \hat{\beta} - d) \sim F_{q, n-p},
+   T_C := \frac{1}{q} (C \hat{\beta} - d)^T (C \hat{\mathcal{I}}^{-1} C^T)^{-1} (C \hat{\beta} - d) = \frac{1}{q}\| C \hat{\beta} - d \|_{C \hat{\mathcal{I}}^{-1} C^T}^2 \sim F_{q, n-p},
 \end{displaymath}
-where $F_{q, n-p}$ is Snedecor's $F$ distribution with $q$ and $n-p$ degrees of freedom in the numerator and denominator, resp. This relationship generalizes~(\ref{eqn:hts_olc}) since an $F$ distribution with one degree of freedom in the numerator is equivalent to a $t^2$ distribution \cite[\S~3.5.3]{Weisberg:2005}. The p-value for this test would be $\Phi_{F_{q, n-p}}(-|T_C|) + (1 - \Phi_{F_{q, n-p}}(|T_C|))$, where $\Phi_{F_{q, n-p}}$ is the cumulative distribution function for an $F$ distribution with the specified degrees of freedom.
+where $F_{q, n-p}$ is Snedecor's $F$ distribution. This relationship generalizes~(\ref{eqn:hts_olc}) since an $F$ distribution with one degree of freedom in the numerator is equivalent to a $t^2$ distribution \cite[\S~3.5.3]{Weisberg:2005}. The p-value for this test would be $\Phi_{F_{q, n-p}}(-|T_C|) + (1 - \Phi_{F_{q, n-p}}(|T_C|))$, where $\Phi_{F_{q, n-p}}$ is the cumulative distribution function for an $F$ distribution with the specified degrees of freedom.
 
-This test statistic is useful in several situations. Suppose we are considering a sequence of nested models: a model consisting only of a grand mean (in which $\mu$ does not depend on the features at all), a model consisting only of main effects, a model with first-order interactions, and a model with higher-order interactions. We may wish to check $H_0$: the model consists only of main effects vs. $H_1$: interactions are present. This amounts to checking whether $C \beta = 0$, where $C \beta$ are the components of $\beta$ corresponding to the interaction terms. Or we may want to check $H_0: \mu(x) = \mu$ vs. $H_1: \mu(x) \neq \mu$, where $\mu$ is the grand mean. In this case, we are checking whether there is any evidence of the mean response depending on the features. Of course, checking multiple hypotheses is subject to the multiple comparisons problem discussed above.
+Under a particular alternative hypothesis, say $C \hat{\beta} = d^\prime$, $T_C$ has a noncentral $F$ distribution with noncentrality parameter $\lambda = \| d^\prime - d \|_{C \mathcal{I}^{-1} C^T}^2$. As above, I cannot find the derivation of this anywhere, so I'll provide it here. Let $L^T L = (C \mathcal{I}^{-1} C^T)^{-1}$ (for example, $L$ is the Cholesky decomposition). Then $L (C \hat{\beta} - d^\prime) \sim \normal(0, I)$ and $L(C \hat{\beta} - d) \sim \normal(L (d^\prime - d), I)$. Under the alternative hypothesis,
+\begin{align*}
+   T_C &= \frac{1}{q} (C \hat{\beta} - d)^T (C \hat{\mathcal{I}}^{-1} C^T)^{-1} (C \hat{\beta} - d) \\
+      &= \frac{\frac{(C \hat{\beta} - d)^T (C \mathcal{I}^{-1} C^T)^{-1} (C \hat{\beta} - d)}{q}}{\frac{(n-p) \hat{\sigma}^2 / \sigma^2}{n-p}} \\
+      &= \frac{\frac{\| L (C \hat{\beta} - d) \|_2^2}{q}}{\frac{(n-p) \hat{\sigma}^2 / \sigma^2}{n-p}}.
+\end{align*}
+The denominator is a $\chi_{n-p}^2$ random variable divided by its degrees of freedom. The numerator is the sum of squares of independent unit variance Gaussian random variables with mean vector $\mu = L (d^\prime - d)$, so letting 
+\begin{align*}
+   \lambda &= \mu^T \mu \\
+      &= (d^\prime - d)^T L^T L (d^\prime - d) \\
+      &= (d^\prime - d)^T (C \mathcal{I}^{-1} C^T)^{-1} (d^\prime - d) \\
+      &= \| d^\prime - d \|_{C \mathcal{I}^{-1} C^T}^2,
+\end{align*}
+we see that the numerator is a noncentral $\chi_q^2$ random variable with noncentrality parameter $\lambda$, divided by its degrees of freedom. Since the numerator is a function of $\hat{\beta}$, and the denominator is a function of $\hat{\sigma}^2$, the numerator and denominator are statistically independent, which demonstrates the test statistic is $F$-distributed. For a test of size $\alpha$, we would reject the null if $|T_C| > F_{q, n-p}^{1 - \alpha/2}$. The probability of doing so under a particular hypothesis is the power of the test and is given by:
+\begin{displaymath}
+   1 - \Phi_{F_{q, n-p; \lambda}}(F_{q, n-p}^{1 - \alpha/2}) + \Phi_{F_{q, n-p; \lambda}}(-F_{q, n-p}^{1 - \alpha/2}),
+\end{displaymath}
+where $\Phi_{F_{q, n-p; \lambda}}$ is the cumulative distribution function of a noncentral $F$ distribution with the stated degrees of freedom and noncentrality parameter.
+
+The $F$ test is useful in several situations. Suppose we are considering a sequence of nested models: a model consisting only of a grand mean (in which $\mu$ does not depend on the features at all), a model consisting only of main effects, a model with first-order interactions, and a model with higher-order interactions. We may wish to check $H_0$: the model consists only of main effects vs. $H_1$: interactions are present. This amounts to checking whether $C \beta = 0$, where $C \beta$ are the components of $\beta$ corresponding to the interaction terms. Or we may want to check $H_0: \mu(x) = \mu$ vs. $H_1: \mu(x) \neq \mu$, where $\mu$ is the grand mean. In this case, we are checking whether there is any evidence of the mean response depending on the features. Of course, checking multiple hypotheses is subject to the multiple comparisons problem discussed above.
 
 If a particular feature is categorical with at least three levels, it will consist of at least two parameters. We would typically want to test whether all associated parameters are non-zero, not just one. Or if $\nu(x)$ consists of multiple transformations of a particular feature, like $\nu(x) = \begin{bmatrix} \cdots & x_1 & x_1^2 & \log(x_1) & \cdots \end{bmatrix}^T$, we might want to simultaneously test all the corresponding components of $\beta$ for being non-zero. The $F$-test described here is applicable to these scenarios.
 
-What about simultaneous confidence intervals on multiple components of $\beta$? How do we do power calculations? What about the residuals, $y^{(i)} - \hat{\mu}^{(i)}$? What do we do with the residuals (graph them against the mean response, make a Q-Q plot, standardize them, etc.)
+The $F$-test is not the only approach to model selection, however; other methods include those based on information criteria like Akaike's Information Criterion (AIC), the Bayesian Information Criterion (BIC), and Mallow's $C_p$ statistic \cite[\S~10.2.1]{Weisberg:2005}. These are given, respectively, by:
+\begin{align*}
+   \textrm{AIC} &= n \log(\| y - V \hat{\beta} \|_2^2 / n) + \textrm{dof} \\
+   \textrm{BIC} &= n \log(\| y - V \hat{\beta} \|_2^2 / n) + \textrm{dof} \cdot \log(n) \\
+   C_p &= \frac{\| y - V \hat{\beta} \|_2^2}{\sigma^2}  + 2 \cdot \textrm{dof} - n,
+\end{align*}
+where dof is equal to the number of parameters estimated in the model. If $\sigma^2$ is known a priori, this is simply $p$; otherwise, it is $p+1$. These formulae clearly illustrate the tradeoff between a better fitting model (which decreases the first term) and a model having more parameters (which increases the second term). Notably, the BIC formula penalizes degrees of freedom much more strongly than does the AIC, and thus will lead to simpler models. (Correction due to finite $n$?) \cite[\S~1.8.6]{Wood:2017} advises caution when using $C_p$ with unknown $\sigma^2$. If we must, it is best to estimate $\sigma^2$ using the most flexible model under consideration, and using the same value for all models being compared.
+
+Cross validation is another, much more computationally intensive approach. LOOCV formula.
+
+What about the residuals, $y^{(i)} - \hat{\mu}^{(i)}$? What do we do with the residuals (graph them against the mean response, make a Q-Q plot, standardize them, etc.)? What about AIC/BIC/$C_p$/Cross Validation?
 
 
 \newpage
