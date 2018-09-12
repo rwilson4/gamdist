@@ -110,8 +110,9 @@ In this section, we state various useful facts (without proof) regarding the lin
 
 The beauty of the linear model is that exact formulae are attainable in support of these goals. Other types of regression only support asymptotic or approximate formulae. However, it is rarely the case that the assumptions of the linear model are expected to hold exactly. If the assumptions are approximately valid, we may hope the formulae which follow are approximately valid. Much has been written about the robustness of these formulae under deviations from the assumptions \cite[\S 9]{Seber:2003}. We are inspired by the maxim \cite{Box:1987}, ``All models are wrong, but some are useful."
 
-Suppose $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$ and $\nu(x) \in \reals^p$ is a known function. Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$, and assume $V$ is full rank. Let $\hat{\beta} = (V^T V)^{-1} V^T y$. Then $\hat{\beta} \sim \normal (\beta, \mathcal{I}^{-1})$, where $\mathcal{I} = (V^T V) / \sigma^2$ is the Fisher information matrix.
-Specifically, $\hat{\beta}$ has a multivariate normal distribution, and $\hat{\beta}$ is an unbiased estimate of $\beta$. It is also a \textit{consistent} estimate of $\beta$, meaning that $\hat{\beta}$ converges in probability to $\beta$, as $n$ increases without limit. It is also the best linear unbiased estimate of $\beta$: any other linear, unbiased estimates have higher variance than $\hat{\beta}$ \cite[\S~1.3.9]{Wood:2017}.
+Suppose $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$ and $\nu(x) \in \reals^p$ is a known function. Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$, and assume $V$ is full rank. Let $\hat{\beta} = (V^T V)^{-1} V^T y$. Then $\hat{\beta} \sim \normal (\beta, \mathcal{I}^{-1})$, where $\mathcal{I} = (V^T V) / \sigma^2$ is the Fisher information matrix. Specifically, $\hat{\beta}$ has a multivariate normal distribution, and $\hat{\beta}$ is an unbiased estimate of $\beta$. It is also a \textit{consistent} estimate of $\beta$, meaning that $\hat{\beta}$ converges in probability to $\beta$, as $n$ increases without limit. It is also the best linear unbiased estimate of $\beta$: any other linear, unbiased estimates have higher variance than $\hat{\beta}$ \cite[\S~1.3.9]{Wood:2017}.
+
+A simple modification permits the model to be much more flexible. Suppose that the $i$th observation has variance $\sigma^2/w^{(i)}$, where $w^{(i)}$ are  known, positive numbers. Let $U$ be the matrix whose $i$th row is $\sqrt{w^{(i)}}\nu(x^{(i)})$, and let $z^{(i)} = \sqrt{w^{(i)}} y^{(i)}$. Then the conclusions of this section are valid substituting $y \to z$ and $V \to U$. For example, $\hat{\beta} = (U^T U)^{-1} U^T z$ is the best linear unbiased estimate of $\beta$ \cite[\S~5.1]{Weisberg:2005}. When $w^{(i)} = 1$, we get the original results since $V=U$ and $y=z$. In what follows, we will proceed in terms of $V$ and $y$.
 
 If $\sigma^2$ is unknown, it may be estimated from the data. Let
 \begin{equation}
@@ -227,7 +228,20 @@ These formulae clearly illustrate the tradeoff between a better fitting model an
 
 Cross validation is another, more computationally intensive approach to model selection. By dividing the data set into a training and test set, we fit the model to the training set and use the result to predict the response for the data in the test set, using the actual response to compute the prediction error. The model giving the best prediction error is the one we select. Often we will then refit the model on the entire data set \cite[\S~7.10]{Hastie:2001}.
 
-What about the residuals, $y^{(i)} - \hat{\mu}^{(i)}$? What do we do with the residuals (graph them against the mean response, make a Q-Q plot, standardize them, etc.)? What plots are useful?
+Finally, we discuss the model residuals, $\hat{\epsilon}^{(i)} = y^{(i)} - \hat{\mu}(x^{(i)})$. We have already been using the residuals to estimate the variance, $\sigma^2$, but examining the residuals is also useful for investigating departures from the assumptions of the linear model: that the response is normally distributed, that the mean of this distribution depends linearly on the model parameters, that the variance is constant, and that the observations are statistically independent. These assumptions may be checked by graphing the residuals.
+
+Let $H = V (V^T V)^{-1} V$ be the so-called \textit{hat matrix}. Then $\hat{\epsilon} \sim \normal(0, \sigma^2 (I - H))$. Notably, the residuals are correlated, and have different variances. Because of this, it is typical to standardize the residuals so that they have equal variance. The internally and externally Studentized residuals are defined as
+\begin{align*}
+   r^{(i)} &= \frac{\hat{\epsilon}^{(i)}}{\sqrt{\hat{\sigma}^2 \cdot (1 - h_i)}} \\
+   t^{(i)} &= \frac{\hat{\epsilon}^{(i)}}{\sqrt{\hat{\sigma}_{(i)}^2 \cdot (1 - h_i)}},
+\end{align*}
+respectively, where $h_i$ is the $i$th diagonal element of $H$ and $\hat{\sigma}_{(i)}^2 = \frac{1}{n-p-1} \sum_{j \neq i} \hat{\epsilon}^{(j)}$. As \cite[\S~10.2]{Seber:2003} states, $(r^{(i)})^2/(n-p)$ has a $\textrm{beta}[\frac{1}{2}, \frac{1}{2}(n-p-1)]$ distribution which means they are identically distributed (but not independent). The externally Studentized residuals, $t^{(i)}$, have a $t_{n-p-1}$ distribution. The externally Studentized residuals are less prone to outliers than are the internally Studentized residuals.
+
+Consider a graph of $t^{(i)}$ (or $r^{(i)}$) against $\hat{\mu}(x^{(i)})$. If the model is correct, we expect to see a scattering of points with no discernible pattern, since the Studentized residuals would be identically distributed. If there is an apparent trend in the residuals, that would indicate a nonlinearity in the model. Or if the variance of the residuals seems to depend on the mean response, that would call into question the constant variance assumption \cite[\S~8.1.5]{Weisberg:2005}.
+
+Since we know the theoretical distribution of the Studentized residuals, we may compare the observed quantiles with the quantiles of their theoretical distributions. These are called Q-Q plots.
+
+What about the residuals, $y^{(i)} - \hat{\mu}^{(i)}$? What do we do with the residuals (graph them against the mean response, make a Q-Q plot, standardize them, etc.)? What plots are useful? Checking for outliers, points with high leverage.
 
 
 \newpage
