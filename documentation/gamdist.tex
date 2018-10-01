@@ -192,7 +192,7 @@ Now suppose $C$ is full rank, and that $q < p$. We would like to test the hypoth
 \begin{displaymath}
    T_C := \frac{1}{q} (C \hat{\beta} - d)^T (C \hat{\mathcal{I}}^{-1} C^T)^{-1} (C \hat{\beta} - d) = \frac{1}{q}\| C \hat{\beta} - d \|_{C \hat{\mathcal{I}}^{-1} C^T}^2 \sim F_{q, n-p},
 \end{displaymath}
-where $F_{q, n-p}$ is Snedecor's $F$ distribution. This relationship generalizes~(\ref{eqn:hts_olc}) since an $F$ distribution with one degree of freedom in the numerator is equivalent to a $t^2$ distribution \cite[\S~3.5.3]{Weisberg:2005}. The p-value for this test would be $\Phi_{F_{q, n-p}}(-|T_C|) + (1 - \Phi_{F_{q, n-p}}(|T_C|))$, where $\Phi_{F_{q, n-p}}$ is the cumulative distribution function for an $F$ distribution with the specified degrees of freedom.
+where $F_{q, n-p}$ is Snedecor's $F$ distribution. This relationship generalizes~(\ref{eqn:hts_olc}) since an $F$ distribution with one degree of freedom in the numerator is equivalent to a $t^2$ distribution \cite[\S~3.5.3]{Weisberg:2005}. The p-value for this test would be $1 - \Phi_{F_{q, n-p}}(T_C)$, where $\Phi_{F_{q, n-p}}$ is the cumulative distribution function for an $F$ distribution with the specified degrees of freedom.
 
 Under a particular alternative hypothesis, say $C \hat{\beta} = d^\prime$, $T_C$ has a noncentral $F$ distribution with noncentrality parameter $\lambda = \| d^\prime - d \|_{C \mathcal{I}^{-1} C^T}^2$. As above, I cannot find the derivation of this anywhere, so I'll provide it here. Let $L^T L = (C \mathcal{I}^{-1} C^T)^{-1}$ (for example, $L$ is the Cholesky decomposition). Then $L (C \hat{\beta} - d^\prime) \sim \normal(0, I)$ and $L(C \hat{\beta} - d) \sim \normal(L (d^\prime - d), I)$. Under the alternative hypothesis,
 \begin{align*}
@@ -207,9 +207,9 @@ The denominator is a $\chi_{n-p}^2$ random variable divided by its degrees of fr
       &= (d^\prime - d)^T (C \mathcal{I}^{-1} C^T)^{-1} (d^\prime - d) \\
       &= \| d^\prime - d \|_{C \mathcal{I}^{-1} C^T}^2,
 \end{align*}
-we see that the numerator is a noncentral $\chi_q^2$ random variable with noncentrality parameter $\lambda$, divided by its degrees of freedom. Since the numerator is a function of $\hat{\beta}$, and the denominator is a function of $\hat{\sigma}^2$, the numerator and denominator are statistically independent, which demonstrates the test statistic is $F$-distributed. For a test of size $\alpha$, we would reject the null if $|T_C| > F_{q, n-p}^{1 - \alpha/2}$. The probability of doing so under a particular hypothesis is the power of the test and is given by:
+we see that the numerator is a noncentral $\chi_q^2$ random variable with noncentrality parameter $\lambda$, divided by its degrees of freedom. Since the numerator is a function of $\hat{\beta}$, and the denominator is a function of $\hat{\sigma}^2$, the numerator and denominator are statistically independent, which demonstrates the test statistic is $F$-distributed. For a test of size $\alpha$, we would reject the null if $T_C > F_{q, n-p}^{1 - \alpha}$. The probability of doing so under a particular hypothesis is the power of the test and is given by:
 \begin{displaymath}
-   1 - \Phi_{F_{q, n-p; \lambda}}(F_{q, n-p}^{1 - \alpha/2}) + \Phi_{F_{q, n-p; \lambda}}(-F_{q, n-p}^{1 - \alpha/2}),
+   1 - \Phi_{F_{q, n-p; \lambda}}(F_{q, n-p}^{1 - \alpha}),
 \end{displaymath}
 where $\Phi_{F_{q, n-p; \lambda}}$ is the cumulative distribution function of a noncentral $F$ distribution with the stated degrees of freedom and noncentrality parameter.
 
@@ -236,7 +236,7 @@ Cross validation is another, more computationally intensive approach to model se
 \subsection{Checking Model Assumptions}
 Finally, we discuss the model residuals, $\hat{\epsilon}^{(i)} = y^{(i)} - \hat{\mu}(x^{(i)})$. We have already been using the residuals to estimate the variance, $\sigma^2$, but examining the residuals is also useful for investigating departures from the assumptions of the linear model: that the response is normally distributed, that the mean of this distribution depends linearly on the model parameters, that the variance is constant (or is of the form $\sigma^2/w^{(i)}$ with known $w^{(i)}$), and that the observations are statistically independent. These assumptions may be checked by graphing the residuals.
 
-Let $H = V (V^T V)^{-1} V$ be the so-called \textit{hat matrix}. Then $\hat{\epsilon} \sim \normal(0, \sigma^2 (I - H))$. Notably, the residuals are correlated, and have different variances (however, the residuals are statistically independent of $\hat{\mu}$). Because of this, it is typical to standardize the residuals so that they have equal variance. The internally and externally Studentized residuals are defined as
+Let $H = V (V^T V)^{-1} V^T$ be the so-called \textit{hat matrix}. Then $\hat{\epsilon} \sim \normal(0, \sigma^2 (I - H))$. Notably, the residuals are correlated, and have different variances (however, the residuals are statistically independent of $\hat{\mu}$). Because of this, it is typical to standardize the residuals so that they have equal variance. The internally and externally Studentized residuals are defined as
 \begin{align*}
    r^{(i)} &= \frac{\hat{\epsilon}^{(i)}}{\sqrt{\hat{\sigma}^2 \cdot (1 - h_i)}} \\
    t^{(i)} &= \frac{\hat{\epsilon}^{(i)}}{\sqrt{\hat{\sigma}_{(i)}^2 \cdot (1 - h_i)}},
@@ -249,17 +249,74 @@ To assess a potential dependence between the mean response and the variance, \ci
 
 We can test the normality assumption using a Q-Q plot, which graphs the observed quantiles of the raw residuals against the quantiles of a standard Gaussian distribution. Alternatively we could graph the quantiles of the Studentized residuals against the quantiles of their theoretical distributions \cite[\S~10.5.1]{Seber:2003}.
 
-We can test for \textit{serial correlation} if the order of observations is physically meaningful. In the absence of correlation, a residual with positive sign is equally likely to be followed by a residual with positive or negative sign, which can easily be examined graphically. Another approach is Durbin and Watson's $d$-test, which checks for a first order autoregressive model for the residuals: $\hat{\epsilon}^{(i)} = \rho \hat{\epsilon}^{(i-1)} + \delta^{(i)}$, where $\delta^{(i)}$. Let
-\begin{displaymath}
-   D = \frac{\sum_{i=2}^n (\hat{\epsilon}^{(i)} - \hat{\epsilon}^{(i-1)})^2}{\sum_{i=1}^n (\hat{\epsilon}^{(i)})^2}.
-\end{displaymath}
-This statistic will always be between 0 and 4. If it is close to 0, that is evidence of $\rho > 0$. If it is close to 4, that is evidence of $\rho < 0$. If it is close to 2, there is no evidence of serial correlation. (How do we calculate confidence intervals on $\rho$? How do we compute p-value? Power?)
+One of the assumptions of the linear model is that the observations are independent. If the observations have a known correlation structure, various approaches exist for fitting models. If we believe the observations are independent, we can check for a specific deviation from this assumption called \textit{serial correlation}. That is, we can check for correlations between sequential pairs of observations. This is especially relevant when the order of observations is physically meaningful. In the absence of correlation, a residual with positive sign is equally likely to be followed by a residual with positive or negative sign, which can easily be examined graphically. A significance test-based procedure was discussed in a series of papers by Durbin and Watson. This test checks for a first-order autoregressive model for the residuals: $\hat{\epsilon}^{(i)} = \rho \hat{\epsilon}^{(i-1)} + \delta^{(i)}$, where $\delta^{(i)}$ are independent normal variables. Let
+\begin{align*}
+   D &= \frac{\sum_{i=2}^n (\hat{\epsilon}^{(i)} - \hat{\epsilon}^{(i-1)})^2}{\sum_{i=1}^n (\hat{\epsilon}^{(i)})^2} = \frac{\hat{\epsilon}^T A \hat{\epsilon}}{\hat{\epsilon}^T \hat{\epsilon}} \textrm{, where} \\
+   A &= \begin{bmatrix}
+       1 & -1 & 0 & 0 & \cdots & \cdots 0 \\
+       -1 & 2 & -1 & 0 & \cdots & \cdots & \cdots \\
+       0 & -1 & 2 & -1 & \cdots & \cdots & \cdots  \\
+       0 & 0 & -1 & 2 & \cdots & \cdots & \cdots \\
+       \cdots & \cdots & \cdots & \cdots & \cdots & \cdots & \cdots \\
+       \cdots & \cdots & \cdots & \cdots & \cdots & 2 & -1 \\
+       \cdots & \cdots & \cdots & \cdots & \cdots & -1 & 1
+   \end{bmatrix}
+\end{align*}
+Under the null hypothesis of independent observations, $D$ has the same distribution as
+\begin{equation}\label{eqn:SCTS}
+    r = \frac{\sum_{i=1}^{n-p} \xi_i \zeta_i^2}{\sum_{i=1}^{n-p} \zeta_i^2},
+\end{equation}
+where $\zeta_i$ are IID standard Gaussian variables and $\xi_i$ are the nonzero eigenvalues of $(I-H)A$---assuming $V$ is full rank, there will be exactly $n-p$ of these \cite[pg.~416]{DW:50}. Two issues present themselves, one computational, the other theoretical. Computing the eigenvalues of $(I-H)A$ may be computationally intensive if $n-p$ is gigantic or if you happen to be living in 1950. More problematically, exact tail probabilities for distributions of the form~(\ref{eqn:SCTS}) are not available.
+
+Since $H$ depends explicitly on the features, it will be different for each regression analysis; however, it can be shown that the eigenvalues $\xi_i$ of $(I-H)A$ are bounded by pairs of the eigenvalues of $A$, $\lambda_i$ \cite{DW:50}. Specifically, if we sort the eigenvalues so that $\xi_1 \leq \xi_2 \leq \cdots \xi_{n-p}$ and $\lambda_1 \leq \lambda_2 \cdots \leq \lambda_{n}$, then $\lambda_i \leq \xi_i \leq \lambda_{i+p}$, $i=1, 2, \ldots, (n-p)$. The eigenvalues of $A$ have a simple form: $\lambda_j = 2 \cdot ( 1 - \cos( \pi (j-1) / n))$, $j=1, 2, \ldots, n$ \cite[pg.~426]{DW:50}.
+
+Tighter bounds hold whenever $s$ of the eigenvectors of $(I-H)A$ are linear combinations of $s$ of the eigenvectors of $A$. That doesn't seem like it would happen very often, but since $\mathbf{1}$ is an eigenvector of $A$ (corresponding to an eigenvalue of zero), when the model includes a constant affine term, then one of the columns of $V$ is $\mathbf{1}$, and $s \geq 1$. When that happens, we may discard the corresponding $s$ eigenvalues of $A$, leaving $n-s$ eigenvalues $\lambda_i$, and the bounds become $\lambda_i \leq \xi_i \leq \lambda_{i+p-s}$.
+
+These bounds on the eigenvalues of $(I-H)A$ become bounds on the distribution of the Durbin-Watson statistic: $r_L \leq r \leq r_U$, where
+\begin{align*}
+   r_L &= \frac{\sum_{i=1}^{n-p} \lambda_i \zeta_i^2}{\sum_{i=1}^{n-p} \zeta_i^2}, \\
+   r_U &= \frac{\sum_{i=1}^{n-p} \lambda_{i+p-s} \zeta_i^2}{\sum_{i=1}^{n-p} \zeta_i^2}.
+\end{align*}
+Note that the distributions of $r_L$ and $r_U$ depend on $n$, $p$, and $s$, but not on the features.
+
+It is straightforward to show that $r_L \geq \lambda_1 = 0$ and $r_U \leq \lambda_n < 4$, which shows that the Durbin-Watson statistic satisfies $0 \leq D < 4$. In the presence of positive serial correlation, $\rho > 0$, $D$ will tend to be closer to 0. When $\rho < 0$, $D$ will tend to be closer to 4. In the absence of serial correlation, $D$ will typically be close to 2. Let $\Phi_L$, $\Phi_U$, and $\Phi_{\textrm{DW}}$ be the cumulative distribution functions of $r_L$, $r_U$, and $r$, respectively, so that, for example, $\Phi_L^{-1}(d) = \Prob\left\{ r_L \leq d \right\}$. In light of the above discussion, $\Phi_L^{-1}(d) \geq \Phi_{\textrm{DW}}^{-1}(d) \geq \Phi_U^{-1}(d)$ \cite[pg.~418]{DW:50}. Table~\ref{tbl:DW} shows how these functions provide bounds on the p-values for various tests related to serial correlation. Evaluating the exact p-values require the eigenvalues $\xi_i$, which depend on the features. Evaluating the bounds only requires tail-probabilities for $\Phi_L$ and $\Phi_U$, which do not depend on the features (but do depend on $n$, $p$, and $s$). These have been tabulated for various values of $n$, $p$, and $s$, for example in \cite{DW:51}.
+
+\begin{table}[!b]
+\centering
+\begin{tabular}{cccc}
+   Test & p-value & Lower bound & Upper bound \\
+   $\rho = 0$ vs.~$\rho > 0$ & $\Phi_{\textrm{DW}}^{-1}(d)$ & $\Phi_U^{-1}(d)$ & $\Phi_L^{-1}(d)$ \\
+   $\rho = 0$ vs.~$\rho < 0$ & $1-\Phi_{\textrm{DW}}^{-1}(d)$ & $1-\Phi_L^{-1}(d)$ & $1-\Phi_U^{-1}(d)$ \\
+   $\rho = 0$ vs.~$\rho \neq 0$ & $\Phi_{\textrm{DW}}^{-1}(d^\prime) + 1 - \Phi_{\textrm{DW}}^{-1}(d^\prime)$ & $\Phi_U^{-1}(d^\prime) + 1 - \Phi_L^{-1}(d^\prime)$ & $\Phi_L^{-1}(d^\prime) + 1 - \Phi_U^{-1}(d^\prime)$
+\end{tabular}
+\caption{\label{tbl:DW}Bounds on p-values for one and two-sided tests regarding the correlation parameter, $\rho$. In all cases, $d$ is the observed value of the Durbin-Watson statistic. In the last row, $d^\prime = 2 - |2 - d|$.}
+\end{table}
+
+When performing an analysis with numbers of observations and parameters not represented in an available table, we are still left with the challenge of computing the tail probabilities of $r_L$ and $r_U$. We may proceed by approximating $r_L / 4$ and $r_U / 4$ as beta-distributed. Tail probabilities for the beta distribution may then be mapped to p-values for the Durbin-Watson statistic. The beta distributions are chosen to have the same means and variances as $r_L/4$ and $r_U/4$, respectively. These may be expressed in terms of the eigenvalues of $A$, $\lambda_i$. If the eigenvalues, $\xi_i$, are in fact known, we can dispense with the bounds entirely. Means and variances for all three statistics are reported in Table~\ref{tbl:DWMV}.
+
+\begin{table}
+\centering
+\begin{tabular}{ccc}
+Statistic & Mean & Variance \\
+$r$ & $\mu=\frac{1}{n-p} \sum_{i=1}^{n-p} \xi_i$ & $\sigma^2 = \frac{2 \sum_{i=1}^{n-p} (\xi_i - \mu)^2}{(n-p)(n-p+2)}$ \\
+$r_L$ & $\mu_L=\frac{1}{n-p} \sum_{i=1}^{n-p} \lambda_i$ & $\sigma_L^2 = \frac{2 \sum_{i=1}^{n-p} (\lambda_i - \mu_L)^2}{(n-p)(n-p+2)}$ \\
+$r_U$ & $\mu_U=\frac{1}{n-p} \sum_{i=1}^{n-p} \lambda_{i+p-s}$ & $\sigma_U^2 = \frac{2 \sum_{i=1}^{n-p} (\lambda_{i+p-s} - \mu_U)^2}{(n-p)(n-p+2)}$
+\end{tabular}
+\caption{\label{tbl:DWMV} Means and variances of the Durbin-Watson and related statistics}
+\end{table}
+
+A beta distribution is typically characterized by parameters $\alpha$ and $\beta$. The mean of a beta distribution is $\frac{\alpha}{\alpha + \beta}$ and the variance is $\frac{\alpha \beta}{(\alpha + \beta)^2 (\alpha + \beta + 1)}$, so the beta distribution used to approximate $r$, for example, has parameters
+\begin{align*}
+   \alpha &= \frac{\mu^2 ( 4 - \mu)}{4 \sigma^2} - \frac{\mu}{4}, \\
+   \beta &= \frac{\mu ( 4 - \mu)^2}{4 \sigma^2} - \frac{4 - \mu}{4}.
+\end{align*}
+For the purposes of calculating p-values, $\Phi_{\alpha, \beta}^{-1}(d/4)$ may be substituted for $\Phi_{\textrm{DW}}^{-1}(d)$ in Table~\ref{tbl:DW}, where $\Phi_{\alpha, \beta}$ is the cumulative distribution function of a beta random variable with parameters $\alpha$ and $\beta$. For more details and discussion of alternative approaches, see \cite{DW:71}.
 
 Finally, we want to examine how any potential outliers affect the fitted model. Small changes to the response for observations on the outskirts of the feature space can have a big effect on the model; such points are said to have high \textit{leverage}. Leverage may be investigated by examining the diagonal terms of the hat matrix, $h_i$. The higher a particular $h_i$, the larger the influence of the corresponding observation on the fitted model. We might consider any observation having $h_i > 2 p / n$ to have high leverage \cite[10.6.1]{Seber:2003}. An observation that does not have high leverage, but deviates wildly from the mean response can also have undue influence on the model. Since the externally Studentized residuals have a $t_{n-p-1}$ distribution, any residual with $|t^{(i)}| > 2$ should be examined (corresponding approximately to the upper and lower $2.5\%$ quantiles).
 
-If a particular observation is both an outlier and has high leverage, we can try omitting the observation, or reducing its weight, and refitting. Large changes to the fitted model indicate the point has high influence. Deciding whether or not to remove the observation depends on the goals of the analysis, how the data were collected, and so forth. A variety of statistics are available for quantifying the impact of leaving out a single observation \cite[\S~10.6.3]{Seber:2003}. For example, the impact of leaving out the $i$th observation to the $i$th fitted value is $h_i \epsilon^{(i)} / (1 - h_i)$. This can be standardized giving $t^{(i)} \sqrt{h_i / (1 - h_i)}$. A cutoff of $2\sqrt{p / (n-p)}$ can be used for identifying high influence points. Another statistic, called Cook's $D$, may be written:
+If a particular observation is both an outlier and has high leverage, we can try omitting the observation, or reducing its weight, and refitting. Large changes to the fitted model indicate the point has high influence. Deciding whether or not to remove the observation depends on the goals of the analysis, how the data were collected, and so forth. A variety of statistics are available for quantifying the impact of leaving out a single observation without actually having to refit the model\cite[\S~10.6.3]{Seber:2003}. For example, the impact of leaving out the $i$th observation to the $i$th fitted value is $h_i \epsilon^{(i)} / (1 - h_i)$. This can be standardized giving $t^{(i)} \sqrt{h_i / (1 - h_i)}$. A cutoff of $2\sqrt{p / (n-p)}$ can be used for identifying high influence points. Another statistic, called Cook's $D$, may be written:
 \begin{displaymath}
-   D^{(i)} = (r^{(i)})^2 \frac{h_i}{p(1-h_i)}.
+   D^{(i)} = \left( r^{(i)} \right)^2 \frac{h_i}{p(1-h_i)}.
 \end{displaymath}
 Cook recommended using $F_{p, n-p}^{0.10}$ as the cutoff for identifying high influence points \cite{Cook:1977}.
 
@@ -267,10 +324,7 @@ When one or more observations have been identified as possible outliers, a forma
 \begin{displaymath}
    T_C = \frac{1}{k} \| \hat{\gamma} \|_{\hat{\mathcal{I}}_{\textrm{augmented}}^{-1}}^2 \sim F_{k, n-p-k},
 \end{displaymath}
-where $\hat{\mathcal{I}}_{\textrm{augmented}}^{-1}$ is the $k \times k$ submatrix of $\hat{\mathcal{I}}^{-1}$ corresponding to the augmented entries of $\nu$. The p-value is $\Phi_{F_{k, n-p-k}}(-| T_C|) + (1 - \Phi_{F_{k, n-p-k}}(|T_C|))$. If this p-value is small, that constitutes evidence that at least one of the observations under consideration is an outlier.
-
-Durbin-Watson test for serial correlation.
-
+where $\hat{\mathcal{I}}_{\textrm{augmented}}^{-1}$ is the $k \times k$ submatrix of $\hat{\mathcal{I}}^{-1}$ corresponding to the augmented entries of $\nu$. The p-value is $1 - \Phi_{F_{k, n-p-k}}(T_C)$. If this p-value is small, that constitutes evidence that at least one of the observations under consideration is an outlier.
 
 \newpage
 \bibliography{gamdist}
