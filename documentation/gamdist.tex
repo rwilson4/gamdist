@@ -4,6 +4,10 @@
 
 \input defs.tex
 
+\newcommand{\gamdist}{\texttt{gamdist}}
+\DeclareMathOperator{\Exp}{\operatorname{E}}
+\DeclareMathOperator{\Var}{\operatorname{Var}}
+
 \bibliographystyle{alpha}
 
 \title{gamdist: Generalized Additive Models in Python}
@@ -21,14 +25,14 @@ TBD
 \newpage
 
 \section{Introduction}
-This paper introduces a Python library called \texttt{gamdist}, which uses a distributed optimization technique called the Alternating Direction Method of Multipliers (ADMM) to fit a special type of regression model called a Generalized Additve Model (GAM)  to data. 
+This paper introduces a Python library called \gamdist{}, which uses a distributed optimization technique called the Alternating Direction Method of Multipliers (ADMM) to fit a special type of regression model called a Generalized Additve Model (GAM)  to data. 
 
 \paragraph{Outline of Paper} In \S\ref{sec:gam} we describe Generalized Additive Models. In \S\ref{sec:admm} we describe the Alternating Direction Method of Multipliers and how it may be used to fit GAMs. In \S\ref{sec:arch}, we describe the architecture of the library, including relevant implementation details.
 
 \section{Generalized Additive Models}
 \label{sec:gam}
 
-The primary goal of \texttt{gamdist} is the estimation of certain aspects of the joint distribution of a collection of one or more random variables $X$ called \textit{features} and a random variable $Y$ we will call the \textit{response}. Specifically, we are interested in the conditional distribution of $Y \given X$. Perhaps the simplest approach is the linear model, which assumes $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$. This notation captures three key assumptions of the linear model. First, the conditional distribution is Gaussian for all values of $X$. Second, the mean of the distribution depends on the features $X$ in a fairly specific way discussed below. Third, the variance is the same for all values of $X$. These assumptions are all loosened in various generalizations of the linear model used in \texttt{gamdist}.
+The primary goal of \gamdist{} is the estimation of certain aspects of the joint distribution of a collection of one or more random variables $X$ called \textit{features} and a random variable $Y$ we will call the \textit{response}. Specifically, we are interested in the conditional distribution of $Y \given X$. Perhaps the simplest approach is the linear model, which assumes $Y \given X = x \sim \normal (\mu(x), \sigma^2)$, where $\mu(x) = \nu(x)^T \beta$. This notation captures three key assumptions of the linear model. First, the conditional distribution is Gaussian for all values of $X$. Second, the mean of the distribution depends on the features $X$ in a fairly specific way discussed below. Third, the variance is the same for all values of $X$. These assumptions are all loosened in various generalizations of the linear model used in \gamdist{}.
 
 If we choose $\nu(x) = x$, then the assumption is that $\mu(x) = x^T \beta$, and the mean depends linearly on the features; however, the \textit{linear} in \textit{linear model} refers to the dependence on $\beta$, not on the features. It is common to include a constant term in $\nu(x)$ to account for an affine dependency between the features and the response. For example, $\nu(x) = \begin{bmatrix} 1 & x_1 & x_2 & \cdots \end{bmatrix}^T$. We might incorporate quadratic terms to capture nonlinear dependencies including interactions, such as $\nu(x) = \begin{bmatrix}x_1 & x_2 & x_1^2 & x_1 \cdot x_2 & x_2^2 & \cdots \end{bmatrix}^T$. Or we might include more exotic transformations of the features, like $\nu(x) = \begin{bmatrix} \log(x_1) & \sin(x_2) & \cdots \end{bmatrix}^T$. These models are nonlinear in the features, but linear in the parameters $\beta$; however, the linear model will only incorporate transformations that we explicitly include.
 
@@ -42,7 +46,7 @@ Another common situation is when some or all of the features are categorical. Fo
 \end{displaymath}
 Alternative approaches to encoding categorical variables are common and useful in different circumstances. We see that the simple linear model is applicable to a wide range of problems, even those that may not appear linear at first glance.
 
-Fitting a linear model to a set of observations is called linear regression, and is accomplished by solving a least squares optimization problem. This is an example of maximum likelihood estimation (MLE), itself a special case of maximum a posteriori (MAP) estimation, which is the unifying approach used throughout \texttt{gamdist}. It is worth formulating this optimization problem so that we may see how it evolves as we consider more general scenarios.
+Fitting a linear model to a set of observations is called linear regression, and is accomplished by solving a least squares optimization problem. This is an example of maximum likelihood estimation (MLE), itself a special case of maximum a posteriori (MAP) estimation, which is the unifying approach used throughout \gamdist{}. It is worth formulating this optimization problem so that we may see how it evolves as we consider more general scenarios.
 
 Suppose we have $n$ observations of the form $\{ (x^{(i)}, \,y^{(i)} ) \}_{i=1, \ldots, n}$. We assume these observations are independent and drawn from the same (unknown) joint distribution.\footnote{This assumption is loosened in random effects or mixed effects models which are not considered here; see \cite{Stroup:2012}.} Under the assumptions of the linear model, $Y \given X = x^{(i)} \sim \normal (\mu(x^{(i)}), \sigma^2)$. The likelihood of a particular observation is
 \begin{displaymath}
@@ -89,7 +93,7 @@ where $r(\beta)$ is a regularization term on $\beta$, such as in the lasso. For 
 
 Introduced by \cite{HT:86}, Generalized Additive Models (GAMs) extend GLMs by permitting $\eta(x)$ to be a nonparametric function of the features: $\eta(x) = \sum_{i=1}^p h_i (x_i)$, where $h_i$ are smooth functions. When $h_i(x_i) = \beta_i x_i$, the linear model is recovered (all of the parametric dependencies discussed with regards to $\nu$  are still possible here of course, but the idea is that the data itself should tell us the form of the relationship). Typically the $h_i$ functions are chosen to be some sort of spline, such as a natural cubic spline. GAMs are also fit via MLE, and many practical problems can be formulated as convex optimization problems.
 
-(Reference GAM, GAMr, Casella and Berger, Seber) regularized GAMs 
+(Reference GAM, GAMr) regularized GAMs 
 
 \section{The Alternating Direction Method of Multipliers}
 \label{sec:admm}
@@ -106,7 +110,7 @@ This is an example of an unnumbered section.
 \section{Properties of the Linear Model}
 \label{app:linear_model}
 
-In this section, we state various useful facts (without proof) regarding the linear model. For details, see \cite{Weisberg:2005}, \cite{Seber:2003}, \cite{Wood:2017}, and \cite{CB:2001}. The goal of this section is twofold: to gather formulae used in \texttt{gamdist}, and to highlight what we typically want to do in a regression analysis, beyond just fitting the model. In fact, it is often desirable to quantify the uncertainty in fitted model parameters, check the assumptions of the model through examination of the residuals, perform model selection, and quantify the uncertainty associated with predictions.
+In this section, we state various useful facts (without proof) regarding the linear model. For details, see \cite{Weisberg:2005}, \cite{Seber:2003}, \cite{Wood:2017}, and \cite{CB:2001}. The goal of this section is twofold: to gather formulae used in \gamdist{}, and to highlight what we typically want to do in a regression analysis, beyond just fitting the model. In fact, it is often desirable to quantify the uncertainty in fitted model parameters, check the assumptions of the model through examination of the residuals, perform model selection, and quantify the uncertainty associated with predictions.
 
 The beauty of the linear model is that exact formulae are attainable in support of these goals. Other types of regression only support asymptotic or approximate formulae. However, it is rarely the case that the assumptions of the linear model are expected to hold exactly. If the assumptions are approximately valid, we may hope the formulae which follow are approximately valid. Much has been written about the robustness of these formulae under deviations from the assumptions \cite[\S 9]{Seber:2003}. We are inspired by the maxim \cite{Box:1987}, ``All models are wrong, but some are useful."
 
@@ -325,6 +329,30 @@ When one or more observations have been identified as possible outliers, a forma
    T_C = \frac{1}{k} \| \hat{\gamma} \|_{\hat{\mathcal{I}}_{\textrm{augmented}}^{-1}}^2 \sim F_{k, n-p-k},
 \end{displaymath}
 where $\hat{\mathcal{I}}_{\textrm{augmented}}^{-1}$ is the $k \times k$ submatrix of $\hat{\mathcal{I}}^{-1}$ corresponding to the augmented entries of $\nu$. The p-value is $1 - \Phi_{F_{k, n-p-k}}(T_C)$. If this p-value is small, that constitutes evidence that at least one of the observations under consideration is an outlier.
+
+\section{Properties of Generalized Linear Models}
+\label{app:glm}
+
+In this section, we state various useful facts (without proof) regarding generalized linear models. For details, see \cite{MN:1983}, \cite{Wood:2017}, and \cite{Agresti:2012}. The primary goals of this section are to show how to map generalized linear models to the results of Appendix \ref{app:linear_model} and to point out where other methods might be more reliable. Generalized linear models have large sample properties similar to linear models, but with finite data these relationships are not necessarily practical.
+
+Suppose the distribution of $Y \given X = x$ is in an exponential family; specifically the distribution is in the \emph{same} exponential family for all values of $x$. Examples include the normal, binomial, Poisson, and gamma distributions. These distributions have a specific relationship between the mean and variance: if $\Exp [Y \given X = x] = \mu(x)$ and $\Var(Y \given X = x) = \sigma^2 (x)$, then distributions in the exponential family all satisfy $\sigma^2(x) = U(\mu(x)) \cdot a(\phi)$; that is, the variance depends on $x$ only through the mean $\mu$ as well as on a parameter $\phi$, called the dispersion, which does not depend on $x$. (In the case of the binomial and Poisson distributions, the dispersion is automatically equal to one; these are one-parameter exponential families.) This turns out to be the important property needed for generalized linear models, which means we can expand generalized linear models to encompass any distribution with a fixed relationship between the mean and variance. For example, if we believe the variance increases linearly with the mean, we can use the methods described herein, without actually knowing the details of the distribution. This means that generalized linear models are indeed quite general.
+
+Now suppose that $g(\mu(x)) = \eta(x) = \nu(x)^T \beta$, where $g$ (called the \emph{link function}) is a known monotonic differentiable function, and $\nu(x) \in \reals^p$ is a known function. A generalized linear model is characterized by the distribution of $Y \given X = x$ (or the more generally the relationship between the mean and variance of this distribution), the link function $g$ and the design function $\nu$. For many choices of distribution and link function maximum likelihood estimation corresponds to a convex optimization problem and can be efficiently performed. We will restrict our attention to such combinations.
+
+Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$ and assume $V$ is full rank. Then the Maximum Likelihood Estimate of $\beta$, $\hat{\beta}$ satisfies $V^T W V \hat{\beta} = V^T W z$, where $W^{-1} = \diag(g^\prime(\hat{\mu}^{(i)})^2 \cdot U(\hat{\mu}^{(i)}))$ and $z_i = \hat{\eta}^{(i)} + (y^{(i)} - \hat{\mu}^{(i)}) g^\prime(\hat{\mu}^{(i)})$. In turn, $\hat{\eta}^{(i)} = \nu(x^{(i)})^T \hat{\beta}$ and $g(\hat{\mu}^{(i)}) = \hat{\eta}^{(i)}$. These equations can be used to determine $\hat{\beta}$ using an iterative weighted least squares procedure, but that is not the procedure \gamdist{} uses. Just as importantly, this fact can be used to derive the large sample properties of $\hat{\beta}$ and related quantities.
+
+For example, the large sample distribution of $\hat{\beta}$ is $\normal(\beta,  \mathcal{I}^{-1})$, where $\mathcal{I} = V^T W V / \phi$, which shows that $\hat{\beta}$ is asymptotically unbiased. Many of the formulae of Appendix~\ref{app:linear_model} hold asymptotically with these equations for $\hat{\beta}$, $\mathcal{I}$, and the estimated Fisher information $\hat{\mathcal{I}} = V^T W V / \hat{\phi}$, where $\hat{\phi}$ is an estimate of the dispersion. These formulae can be used for hypothesis tests on linear combinations of the parameters $\beta$, to compute the power of these tests against specific alternatives, and to compute confidence intervals on these linear combinations.
+
+In a few instances, methods with better performance with finite data are known. These methods outperform the asymptotic-normal approach. Suppose $H_0$ and $H_1$ are nested models with $p$ and $q$ degrees of freedom, respectively, $p < q$. By nested we mean that $H_0$ is simply the model $H_1$ subject to a constraint $C \beta = d$, where $C \in \reals^{(q-p)\times r}$. Let $D_i^*$ be the scaled deviance of the model fit under $H_i$. Then $D_0^* - D_1^*$ has an asymptotic $\chi_{q-p}^2$ distribution. Computing the scaled deviance requires knowledge of the dispersion parameter. When this is unknown, rather than substituting an estimate it is better to work in terms of the deviances, $D_i = D_i^* \cdot \phi$, which do not require knowledge of $\phi$ to compute. Then $\frac{(D_0 - D_1) / (q-p)}{D_1 / (n - q)}$ has an asymptotic $F_{q-p, n-q}$ distribution. These facts can be used to compute p-values on the null hypothesis $H_0$ against the alternative $H_1$. These tests are preferred (over the $F$-test described in Appendix~\ref{app:linear_model}) for model selection with generalized linear models. Other methods described in Appendix~\ref{app:linear_model} such as the Akaike Information Criterion and cross validation are valid here as well.
+
+What does this mean for confidence intervals on $\beta$? What is the distribution of the test statistic under an alternative hypothesis? What is the power of this test?
+
+Inference for $\phi$? Confidence intervals? Large sample distribution? 
+
+Prediction intervals?
+
+How to check model assumptions? What are the residuals and what do we do with them?
+
 
 \newpage
 \bibliography{gamdist}
