@@ -127,7 +127,7 @@ Then $(n-p) \hat{\sigma}^2 / \sigma^2 \sim \chi_{n-p}^2$, and $\hat{\beta}$ and 
 
 \subsection{Confidence Intervals and Hypothesis Tests \label{sec:CIHT}}
 Suppose $\Prob\{ \chi_{n-p}^2 \in (\ell, u) \} = \alpha$; that is, $(\ell, u)$ is a confidence interval (at level $\alpha$) on a $\chi_{n-p}^2$ random variable. Then 
-\begin{equation}
+\begin{equation}\label{eqn:var_ci}
    \Prob \left\{ \sigma^2 \in \left( \frac{(n-p) \cdot \hat{\sigma}^2}{u}, \frac{(n-p) \cdot \hat{\sigma}^2}{\ell} \right) \right\} = \alpha.
 \end{equation}
 A particularly useful case is when $u \to \infty$, corresponding to $\ell = \Phi_{\chi_{n-p}^2}^{-1}(1 - \alpha)$, where $\Phi_{\chi_{n-p}^2}$ is the cumulative distribution function of a $\chi_{n-p}^2$ random variable, in which case 
@@ -333,26 +333,64 @@ where $\hat{\mathcal{I}}_{\textrm{augmented}}^{-1}$ is the $k \times k$ submatri
 \section{Properties of Generalized Linear Models}
 \label{app:glm}
 
-In this section, we state various useful facts (without proof) regarding generalized linear models. For details, see \cite{MN:1983}, \cite{Wood:2017}, and \cite{Agresti:2012}. The primary goals of this section are to show how to map generalized linear models to the results of Appendix \ref{app:linear_model} and to point out where other methods might be more reliable. Generalized linear models have large sample properties similar to linear models, but with finite data these relationships are not necessarily practical.
+In this section, we state various useful facts (without proof) regarding generalized linear models. For details, see \cite{MN:1983}, \cite{Wood:2017}, and \cite{Agresti:2012}. Generalized linear models have large sample properties similar to linear models, but with finite data these relationships are not necessarily practical. The primary goals of this section are to show how to map generalized linear models to the results of Appendix \ref{app:linear_model} and to point out where other methods might be more reliable.
 
-Suppose the distribution of $Y \given X = x$ is in an exponential family; specifically the distribution is in the \emph{same} exponential family for all values of $x$. Examples include the normal, binomial, Poisson, and gamma distributions. These distributions have a specific relationship between the mean and variance: if $\Exp [Y \given X = x] = \mu(x)$ and $\Var(Y \given X = x) = \sigma^2 (x)$, then distributions in the exponential family all satisfy $\sigma^2(x) = U(\mu(x)) \cdot a(\phi)$; that is, the variance depends on $x$ only through the mean $\mu$ as well as on a parameter $\phi$, called the dispersion, which does not depend on $x$. (In the case of the binomial and Poisson distributions, the dispersion is automatically equal to one; these are one-parameter exponential families.) This turns out to be the important property needed for generalized linear models, which means we can expand generalized linear models to encompass any distribution with a fixed relationship between the mean and variance. For example, if we believe the variance increases linearly with the mean, we can use the methods described herein, without actually knowing the details of the distribution. This means that generalized linear models are indeed quite general.
+\subsection{Properties of the Estimated Model}
 
-Now suppose that $g(\mu(x)) = \eta(x) = \nu(x)^T \beta$, where $g$ (called the \emph{link function}) is a known monotonic differentiable function, and $\nu(x) \in \reals^p$ is a known function. A generalized linear model is characterized by the distribution of $Y \given X = x$ (or the more generally the relationship between the mean and variance of this distribution), the link function $g$ and the design function $\nu$. For many choices of distribution and link function maximum likelihood estimation corresponds to a convex optimization problem and can be efficiently performed. We will restrict our attention to such combinations.
+Suppose the distribution of $Y \given X = x$ is in an exponential family; specifically the distribution is in the \emph{same} exponential family for all values of $x$. Examples include the normal, binomial, Poisson, and gamma distributions. These distributions have a specific relationship between the mean and variance: if $\Exp [Y \given X = x] = \mu(x)$ and $\Var(Y \given X = x) = \sigma^2 (x)$, then distributions in the exponential family all satisfy $\sigma^2(x) = U(\mu(x)) \cdot a(\phi)$; that is, the variance depends on $x$ only through the mean $\mu$ as well as on a parameter $\phi$, called the dispersion, which does not depend on $x$ \cite[\S 2.2.2]{MN:1983}. (In the case of the binomial and Poisson distributions, the dispersion is automatically equal to one; these are one-parameter exponential families.) $U(\mu)$ is called the \emph{variance function}. The variance function is distinct from the variance!
 
-Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$ and assume $V$ is full rank. Then the Maximum Likelihood Estimate of $\beta$, $\hat{\beta}$ satisfies $V^T W V \hat{\beta} = V^T W z$, where $W^{-1} = \diag(g^\prime(\hat{\mu}^{(i)})^2 \cdot U(\hat{\mu}^{(i)}))$ and $z_i = \hat{\eta}^{(i)} + (y^{(i)} - \hat{\mu}^{(i)}) g^\prime(\hat{\mu}^{(i)})$. In turn, $\hat{\eta}^{(i)} = \nu(x^{(i)})^T \hat{\beta}$ and $g(\hat{\mu}^{(i)}) = \hat{\eta}^{(i)}$. These equations can be used to determine $\hat{\beta}$ using an iterative weighted least squares procedure, but that is not the procedure \gamdist{} uses. Just as importantly, this fact can be used to derive the large sample properties of $\hat{\beta}$ and related quantities.
+The important property needed for generalized linear models is the relationship between the mean and variance, which means we can expand generalized linear models to encompass any distribution where this relationship is known \cite[\S 9]{MN:1983}. For example, if we believe the variance increases linearly with the mean, we can use the methods described herein, without actually knowing the details of the distribution. We see that generalized linear models are indeed quite general!
 
-For example, the large sample distribution of $\hat{\beta}$ is $\normal(\beta,  \mathcal{I}^{-1})$, where $\mathcal{I} = V^T W V / \phi$, which shows that $\hat{\beta}$ is asymptotically unbiased. Many of the formulae of Appendix~\ref{app:linear_model} hold asymptotically with these equations for $\hat{\beta}$, $\mathcal{I}$, and the estimated Fisher information $\hat{\mathcal{I}} = V^T W V / \hat{\phi}$, where $\hat{\phi}$ is an estimate of the dispersion. These formulae can be used for hypothesis tests on linear combinations of the parameters $\beta$, to compute the power of these tests against specific alternatives, and to compute confidence intervals on these linear combinations.
+Now suppose that $g(\mu(x)) = \eta(x) = \nu(x)^T \beta$, where $g$ (called the \emph{link function}) is a known monotonic differentiable function, and $\nu(x) \in \reals^p$ is a known function. A generalized linear model is characterized by the distribution of $Y \given X = x$ (or the more generally the relationship between the mean and variance of this distribution), the link function $g$ and the design function $\nu$. For example, when $g$ is the identity, and the normal distribution is chosen, we recover the linear model.
 
-In a few instances, methods with better performance with finite data are known. These methods outperform the asymptotic-normal approach. Suppose $H_0$ and $H_1$ are nested models with $p$ and $q$ degrees of freedom, respectively, $p < q$. By nested we mean that $H_0$ is simply the model $H_1$ subject to a constraint $C \beta = d$, where $C \in \reals^{(q-p)\times r}$. Let $D_i^*$ be the scaled deviance of the model fit under $H_i$. Then $D_0^* - D_1^*$ has an asymptotic $\chi_{q-p}^2$ distribution. Computing the scaled deviance requires knowledge of the dispersion parameter. When this is unknown, rather than substituting an estimate it is better to work in terms of the deviances, $D_i = D_i^* \cdot \phi$, which do not require knowledge of $\phi$ to compute. Then $\frac{(D_0 - D_1) / (q-p)}{D_1 / (n - q)}$ has an asymptotic $F_{q-p, n-q}$ distribution. These facts can be used to compute p-values on the null hypothesis $H_0$ against the alternative $H_1$. These tests are preferred (over the $F$-test described in Appendix~\ref{app:linear_model}) for model selection with generalized linear models. Other methods described in Appendix~\ref{app:linear_model} such as the Akaike Information Criterion and cross validation are valid here as well.
+We fit generalized linear models using Maximum Likelihood Estimation (MLE), or an alternative method based on a `quasi-likelihood function' when the exact distribution is unknown. Let $\ell(\mu(\beta); x, y) = \sum_i \ell(\mu(\beta); x^{(i)}, y^{(i)})$ be the log-likelihood or log-quasi-likelihood expressed as a function of the parameters $\beta$ and parameterized by the data. Whichever value of $\beta$ maximizes the log-likelihood (and therefore the likelihood) is the maximum likelihood estimate of $\beta$. For many choices of distribution and link function, maximum likelihood estimation corresponds to a convex optimization problem and can be efficiently performed. We will restrict our attention to such combinations.
 
-What does this mean for confidence intervals on $\beta$? What is the distribution of the test statistic under an alternative hypothesis? What is the power of this test?
+The log-likelihood function achieves its maximum possible value when $\mu = y$; that is, $\ell(y; x, y)$ is the largest possible log-likelihood. Often there is no choice of $\beta$ such that $\mu(\beta) = y$, due to restrictions imposed by the design function, $\nu$. The scaled deviance, $D^*$, for a fitted model with parameter $\hat{\beta}$ is defined to be $D^* = 2 \ell(y; x, y) - 2 \ell(\mu(\hat{\beta}); x, y)$. Necessarily, $D^* \geq 0$, with smaller values of $D^*$ indicating a better fit. The scaled deviance has a certain relationship with the $\chi^2$ distribution which is frequently used for inference. Unfortunately, we need to know the dispersion parameter, $\phi$, in order to compute the scaled deviance. Often it is better to work with the (unscaled) deviance, $D = D^* \cdot \phi$ which does not involve the dispersion parameter.
 
-Inference for $\phi$? Confidence intervals? Large sample distribution? 
+Let $\{ (x^{(i)}, y^{(i)}) \}_{i=1, \ldots, n}$ be IID samples drawn from the joint distribution of $X$ and $Y$. Let $V$ be the matrix whose $i$th row is $\nu(x^{(i)})$ and assume $V$ is full rank. Then the Maximum Likelihood Estimate of $\beta$, $\hat{\beta}$ satisfies $V^T W V \hat{\beta} = V^T W z$, where $W^{-1} = \diag(g^\prime(\hat{\mu}^{(i)})^2 \cdot U(\hat{\mu}^{(i)}))$ and $z_i = \hat{\eta}^{(i)} + (y^{(i)} - \hat{\mu}^{(i)}) g^\prime(\hat{\mu}^{(i)})$. In turn, $\hat{\eta}^{(i)} = \nu(x^{(i)})^T \hat{\beta}$ and $g(\hat{\mu}^{(i)}) = \hat{\eta}^{(i)}$. These equations can be used to determine $\hat{\beta}$ using an iterative weighted least squares procedure \cite[\S 2.5]{MN:1983}, but that is not the procedure \gamdist{} uses. Just as importantly, this fact can be used to derive the large sample properties of $\hat{\beta}$ and related quantities.
 
-Prediction intervals?
+For example, the large sample distribution of $\hat{\beta}$ is $\normal(\beta,  \mathcal{I}^{-1})$, where $\mathcal{I} = V^T W V / \phi$ is the Fisher information, which shows that $\hat{\beta}$ is asymptotically unbiased. Many of the formulae of Appendix~\ref{app:linear_model} hold asymptotically with these equations for $\hat{\beta}$, $\mathcal{I}$, and the estimated Fisher information $\hat{\mathcal{I}} = V^T W V / \hat{\phi}$, where $\hat{\phi}$ is an estimate of the dispersion (see below). These formulae can be used for hypothesis tests on linear combinations of the parameters $\beta$, to compute the power of these tests against specific alternatives, and to compute confidence intervals on these linear combinations.
 
-How to check model assumptions? What are the residuals and what do we do with them?
+\subsection{Methods with Better Finite-Sample Performance}
+In a few instances, methods with better performance with finite data are known. These methods outperform the asymptotic-normal approach for moderate data sizes. Suppose $H_0$ and $H_1$ are nested models with $p$ and $q$ degrees of freedom, respectively, $p < q$. By nested we mean that $H_0$ is simply the model $H_1$ subject to a constraint $C \beta = d$, where $C \in \reals^{(q-p)\times q}$. Let $D_i^*$ be the scaled deviance of the model fit under $H_i$. Then under $H_0$, $D_0^* - D_1^*$ has an asymptotic $\chi_{q-p}^2$ distribution. Computing the scaled deviance requires knowledge of the dispersion parameter. When this is unknown, rather than substituting an estimate it is better to work in terms of the deviances, $D_i = D_i^* \cdot \phi$, which do not require knowledge of $\phi$ to compute. Then under $H_0$,
+\begin{displaymath}
+   T_F = \frac{(D_0 - D_1) / (q-p)}{D_1 / (n - q)}
+\end{displaymath}
+has an asymptotic $F_{q-p, n-q}$ distribution. These facts can be used to compute p-values on the null hypothesis $H_0$ against the alternative $H_1$. These tests are preferred (over the $F$-test described in Appendix~\ref{app:linear_model}) for model selection with generalized linear models. Other methods described in Appendix~\ref{app:linear_model} such as the Akaike Information Criterion and cross validation are valid here as well.
 
+The likelihood ratio test often provides better confidence intervals on $\beta$ than methods based on the normal approximation. Any value of $\beta$ satisfying 
+\begin{displaymath}
+   2 \ell(\hat{\beta}; x, y) - 2 \ell(\beta; x, y) \leq \Phi_{\chi_p^2}(1 - \alpha)
+\end{displaymath}
+is part of a $100(1-\alpha)\%$ confidence region on the true parameter.
+
+\subsection{Estimating the Dispersion Parameter}
+There are several ways of estimating the dispersion parameter based on the distribution. One method is based on Pearson's $X^2$ statistic:
+\begin{displaymath}
+   \hat{\phi}_P = \frac{1}{n-p} \sum_i \frac{(y^{(i)} - \hat{\mu}^{(i)})^2}{U(\mu^{(i)})},
+\end{displaymath}
+where $U(\mu)$ is the variance function (recall that the variance function is distinct from the variance). Pearson's $X^2$ statistic is asymptotically unbiased for the dispersion, as its asymptotic distribution shows: $(n-p)\hat{\phi}_P / \phi \sim \chi_{n-p}^2$. This relationship can be used to compute confidence intervals on the dispersion, similar to Equation~(\ref{eqn:var_ci}).
+
+For particular distributions, in certain circumstances, more effective methods for estimating the dispersion are possible. See, for example, \cite[\S 4.5.2, \S 6.2.4, and \S 8.3.6]{MN:1983}.
+
+\begin{itemize}
+\item What are the other approaches to estimating dispersion?
+\item What is the distribution of the $T_F$ under an alternative hypothesis, $C \beta = d^\prime$? I think it's a noncentral $F$ with noncentrality parameter relating to the difference in likelihoods between $H_0$ and the specific alternative. $D_0 - D_0^\prime$ where $D_0^\prime$ is the deviance under the alternative. What is the power of this test?
+\item Prediction intervals?
+\item How to check model assumptions? What are the residuals and what do we do with them? How can we check for serial correlation? How can we check for deviations from linearity in $\eta$? How can we check the link function? How can we check the distribution? How do we detect outliers? Leverage and influence? Formal test for outliers (should be similar to $F$-test?)
+\item Do the observations need to be IID from the joint distribution of $X$ and $Y$? Can we oversample in some areas? Completely change the distribution of $X$? What does this mean for applying the resulting model to the true joint distribution of $X$ and $Y$?
+\item What is the appropriate modification to the information criteria?
+\end{itemize}
+
+\section{Models with Regularization}
+\label{app:regularization}
+
+\begin{itemize}
+\item Bayesian interpretation
+\item What is the impact to hypothesis tests? Confidence intervals? Power? Predictions?
+\item Model selection?
+\item Analysis of residuals? Outliers, leverage, influence?
+\end{itemize}
 
 \newpage
 \bibliography{gamdist}
