@@ -455,9 +455,39 @@ where $U(\mu)$ is the variance function (recall that the variance function is di
 
 For particular distributions, in certain circumstances, more effective methods for estimating the dispersion are possible. See, for example, \cite[\S 4.5.2, \S 6.2.4, and \S 8.3.6]{MN:1983}. One promising replacement is Fletcher's estimator, introduced in \cite{Fletcher:12} and described in \cite[\S 3.1.5]{Wood:2017}: $\hat{\phi}_F = \frac{\hat{\phi}_P}{1 + \bar{s}}$ where $\bar{s}=n^{-1} \sum_{i=1}^n U^\prime(\hat{\mu}^{(i)}) (y^{(i)} - \hat{\mu}^{(i)})/U(\hat{\mu}^{(i)})$.
 
-\begin{itemize}
-\item How to check model assumptions? Graph-based and formal? What are the residuals and what do we do with them? How can we check for serial correlation? How can we check for deviations from linearity in $\eta$? How can we check the link function? How can we check the variance function? How can we check the distribution? How do we detect outliers? Leverage and influence? Formal test for outliers (should be similar to $F$-test?)
-\end{itemize}
+\subsection{Checking Model Assumptions}
+Checking for systematic or isolated departures from the model inevitably involves examining the residuals. For families like the binomial, residuals of the form $y^{(i)} - \mu^{(i)}$, where $y^{(i)} \in \{ 0, 1 \}$, are not especially enlightening. Instead, residual-like quantities have been devised \cite[\S 2.4]{MN:1983}.
+
+The Pearson residual is defined as $r_P^{(i)} = \frac{y^{(i)} - \hat{\mu}^{(i)}}{\sqrt{U(\hat{\mu}^{(i)})}}$, which simply transforms the residual to the variance scale. This is helpful for families where the variance increases linearly or quadratically with the mean. Another type of residual is based on the deviance of each individual observation, $d^{(i)}$: $r_D^{(i)} = \sign(y^{(i)} - \hat{\mu}^{(i)}) \sqrt{d^{(i)}}$. Another type of residual, the Anscombe residual, is described in \cite[\S 2.4.2]{MN:1983}.
+
+Let $h_i$ be the diagonal elements of the hat matrix, $H = W^{1/2}V(V^T W V)^{-1} V^T W^{1/2}$. As in the linear model, we can standardize the residuals. The internally Studentized residuals for the Pearson and deviance residuals are, respectively,
+\begin{align*}
+   (r_P^\prime)^{(i)} &= \frac{y^{(i)} - \hat{\mu}^{(i)}}{\sqrt{\hat{\phi} \cdot U(\hat{\mu}^{(i)}) \cdot (1 - h_i) }}, \\
+   (r_D^\prime)^{(i)} &= \frac{r_D^{(i)}}{\sqrt{\hat{\phi} \cdot (1 - h_i) }}.
+\end{align*}
+For the externally Studentized residuals, we would need to refit the model leaving out each observation in turn. Unlike linear regression, there is no simple formula for doing so. Instead, it is common to start from the fitted model having all observations, remove a single observation and carry out a single iteration of the fitting procedure \cite[\S 12.5]{MN:1983}.
+
+Informal checks for systematic departures from the model involve plotting the residuals (ideally, the internally or externally Studentized deviance residuals) against the fitted $\hat{\eta}$ or $\hat{\mu}$, against the features, or against a variable not included in the model (a so-called \emph{added variable plot}). When plotting $\hat{\mu}$ it is useful to transform to the constant information scale. That is, instead of plotting the residuals against $\hat{\mu}$, plot against $2 \cdot \sqrt{\hat{\mu}}$ for a Poisson model or $2 \sin^{-1} \sqrt{\hat{\mu}}$ for binomial models. The appearance of a trend in these plots can indicate an issue with the variance function $U(\mu)$, the link function, of the scale of one or more of the covariates.
+
+Formal tests for the variance function embed the chosen function in a family of functions indexed by a parameter $\zeta$. A common choice is $U(\mu) = \mu^\zeta$. Suppose the chosen variance function corresponds to $\zeta = 1$. We can use a score test to compute a p-value against the null hypothesis that $\zeta = 1$, and confidence intervals on $\zeta$, to assess whether the data disagree with our assumption \cite[\S 12.6.2]{MN:1983}.
+
+Assessing adequacy of the link function is similar. We embed the link function in a family of link functions and assess how the fit improves over the family. For the binomial family, the family of link functions
+\begin{displaymath}
+   g(\mu; \lambda) = \log \left[ \frac{1}{\lambda} \left( \left(\frac{1}{1 - \pi} \right)^\lambda - 1 \right) \right]
+\end{displaymath}
+contains the logistic function ($\lambda = 1$) and the complementary log-log link ($\lambda \to 0$) as special cases \cite[\S 11.3.2]{MN:1983}. Again, a score test may be employed to compute p-values against a null hypothesis regarding $\lambda$, or a confidence interval may be calculated.
+
+Finally, the linear dependence between $\eta$ and one or more features might be suspect. We may wish to test whether $\eta$ is a smooth, additive, but potentially non-linear function of the parameters. This can be done use the techniques described in Appendix~\ref{app:regularization}. Since natural cubic splines reduce to a linear model in the limit of infinite smoothing, the smoothing parameter is a natural choice for a formal test in the spirit of those considered for the variance and link functions.
+
+\subsection{Isolated Departures from the Model}
+As in the linear model, even if the assumptions are essentially correct, there may be a small number of outlying points. As with the linear model, if any of the diagonal elements of the hat matrix, $h_i > 2p/n$, the corresponding observations have high leverage \cite[\S 12.7.1]{MN:1983}.
+
+For assessing influence, the analogue of Cook's $D$ statistic is
+\begin{displaymath}
+   D^{(i)} = (\hat{\beta}_{(i)} - \hat{\beta})^T(V^T W V)(\hat{\beta}_{(i)} - \hat{\beta}) / p \hat{\phi}
+\end{displaymath}
+where $\hat{\beta}_{(i)}$ is the fit resulting from omitting the $i$th observation \cite[\S 12.7.3]{MN:1983}. We may use the same cutoff as in the linear model, $F_{p, n-p}^{0.10}$ for identifying high influence points.
+
 
 \section{Models with Regularization}
 \label{app:regularization}
@@ -465,7 +495,7 @@ For particular distributions, in certain circumstances, more effective methods f
 \begin{itemize}
 \item Bayesian interpretation
 \item What is the impact to hypothesis tests? Confidence intervals? Power? Predictions?
-\item Model selection?
+\item Model selection? Post-selection inference?
 \item Analysis of residuals? Outliers, leverage, influence?
 \end{itemize}
 
