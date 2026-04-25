@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import pickle
+import warnings
 from typing import Any
 
 import cvxpy as cvx
@@ -417,11 +418,29 @@ class _CategoricalFeature(_Feature):
         return float(len(self.p) - 1)
 
     def predict(self, X: npt.NDArray[Any]) -> FloatArray:
-        """Apply fitted model to feature."""
+        """Apply fitted model to feature.
+
+        Categories not seen during ``fit()`` are predicted with effect 0
+        (the average across training categories, by the zero-sum
+        constraint) and trigger a ``UserWarning`` listing them.
+        """
         prediction = np.zeros(len(X))
+        unseen: set[Any] = set()
         for i in range(len(X)):
-            if X[i] in self._category_hash:
-                prediction[i] = self.p[self._category_hash[X[i]]]
+            value = X[i]
+            if value in self._category_hash:
+                prediction[i] = self.p[self._category_hash[value]]
+            else:
+                unseen.add(value)
+        if unseen:
+            sample = sorted(unseen, key=str)[:5]
+            suffix = "" if len(unseen) <= 5 else f", +{len(unseen) - 5} more"
+            warnings.warn(
+                f"Feature {self._name!r}: unseen categories predicted "
+                f"with effect 0: {sample}{suffix}",
+                UserWarning,
+                stacklevel=2,
+            )
         return prediction
 
     def _plot(self, true_fn: Any = None) -> None:
