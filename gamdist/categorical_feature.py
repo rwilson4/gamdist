@@ -20,677 +20,416 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
-import sys
-import numpy as np
-import cvxpy as cvx
-from scipy import sparse
-from .feature import _Feature
+from __future__ import annotations
+
 import pickle
+from typing import Any
+
+import cvxpy as cvx
+import numpy as np
+import numpy.typing as npt
+from scipy import sparse
+
+from .feature import _Feature
+
+FloatArray = npt.NDArray[np.float64]
+IntArray = npt.NDArray[np.int64]
+
 
 class _CategoricalFeature(_Feature):
-    def __init__(self, name=None, regularization=None, load_from_file=None):
-        """Initialize feature model (independent of data).
+    """A categorical feature: contributes a per-level offset to the predictor."""
 
-        This function is called when the user adds a feature to a
-        Model, before any data has been specified.
+    def __init__(
+        self,
+        name: str | None = None,
+        regularization: dict[str, Any] | None = None,
+        load_from_file: str | None = None,
+    ) -> None:
+        """Initialize feature model (independent of data).
 
         Parameters
         ----------
-        name : string
+        name : str
             Name for feature, used to make plots.
-        regularization : dictionary
-            Description of regularization terms. Three kinds of
-            regularization are supported: l1, l2, and Network Lasso.
-            To include one or more of these types of regularization,
-            include a key/value specifying the details in this dictionary.
-            The keys should be in ['l1', 'l2', 'network_lasso']. The
-            corresponding value provides additional details on the
-            regularization, as described below. One additional key
-            is recognized in this dictionary, 'prior', specifying
-            a prior estimate of the parameters. See below for more
-            details.
-        load_from_file : string or None.
-            Filename for this Feature, to be used for loading parameters. If
-            None (default), parameters are not loaded. If this parameter
-            is specified, any other parameters are ignored.
-
-        l1 Regularization Parameters
-        ----------------------------
-        Description
-            l1 regularization is said to encourage sparsity, in the sense
-            that the resulting parameter estimates will typically match
-            some of the prior estimates perfectly. On the other hand,
-            it does not heavily discourage large deviations.
-        coef : float or dictionary
-            Coefficient associated with this regularization term, applied
-            to all parameter estimates (if float), or with a separate
-            coefficient for multiple parameters (if dictionary). If a
-            dictionary is used, only parameters with specified coefficients
-            are regularized.
-        prior : dictionary
-            Prior estimate of parameters associated with different categories.
-            Only parameters with specified prior estimates are regularized.
-            If this variable is not specified at all, an estimate of zero
-            for all categories is assumed. Note: this variable applies to both
-            l1 and l2 regularization, so if both are included, it seems silly
-            to specify it twice. Therefore, and perhaps confusingly, this
-            variable is specified in the top level regularization dictionary,
-            not in the individual regularization term dictionary. This is
-            best illustrated by example:
-               regularization = {'l1': {'coef': 0.3},
-                                 'l2': {'coef': {'male': 0.1, 'female': 0.2}},
-                                 'network_lasso': {'coef': 0.3, 'edges': edges},
-                                 'prior': {'male': -3.0, 'female': 5.0}
-                                 }
-            This incorporates all three types of regularization, with a coefficient
-            of 0.3 applied to all terms in the l1 term, a coefficient of 0.1 (0.2)
-            applied to the male (female) components of the l2 term, a prior estimate
-            of -3.0 (5.0) for the parameters corresponding to males (females), which
-            is applicable to both the l1 and l2 norms, and finally, a Network Lasso
-            term with overall coefficient 0.3, and edges specified in the pandas
-            DataFrame.
-
-        l2 Regularization Parameters
-        ----------------------------
-        Description
-            l2 regularization discourages large deviations from the prior
-            estimate.
-        coef : float or dictionary
-            See l1 Regularization Parameters.
-        prior: dictionary
-            See l1 Regularization Parameters.
-
-        Network Lasso Regularization Parameters
-        ---------------------------------------
-        Description
-            The Network Lasso encourages similar categories to have similar
-            parameter values, where the similarity of categories is defined
-            by the user.
-        coef : float
-            See l1 Regularization Parameters; but! Only floats are permitted
-            here.
-        edges : pandas DataFrame
-            Specifies which categories are believed to be similar to other
-            categories. Dataframe must have at least two columns called 'country1'
-            and 'country2'. An optional third column called 'weight' specifies the
-            strength of the belief. All values will be scaled to have maximum value
-            equal to 1 (so only relative strengths are used). Use coef to capture
-            the overall strength of these beliefs. If the 'weight' column is not
-            present, weights of 1 will be used for all parameters.
-
-        Optional Parameters
-        -------------------
-        use_cvx : bool
-            Flag specifying whether to use CVXPY to solve the
-            optimization problem. Defaults to True, and since no other
-            method has been implemented, does nothing.
-        solver : string
-            Solver to use with CVXPY. Defaults to 'ECOS'.
+        regularization : dict
+            Description of regularization terms (``l1``, ``l2``,
+            ``network_lasso``). See the package README for details.
+        load_from_file : str
+            Pickle path used to restore parameters. If specified,
+            other parameters are ignored.
         """
-
-        self.__type__ = 'categorical'
+        self.__type__ = "categorical"
         if load_from_file is not None:
             self._load(load_from_file)
             return
 
         if name is None:
-            raise ValueError('Feature must have a name.')
+            raise ValueError("Feature must have a name.")
 
-        _Feature.__init__(self, name)
+        super().__init__(name)
 
         self._use_cvx = True
-        self._solver = 'ECOS'
-        self._categories = []
+        self._solver = "CLARABEL"
+        self._categories: list[Any] = []
         self._has_l1 = False
         self._has_l2 = False
         self._has_network_lasso = False
         self._has_prior = False
+        self._coef1: float | dict[Any, float] = 0.0
+        self._coef2: float | dict[Any, float] = 0.0
+        self._lambda_network_lasso: float = 0.0
+        self._num_edges: int = 0
         if regularization is not None:
-            if 'l1' in regularization:
+            if "l1" in regularization:
                 self._has_l1 = True
-                if 'coef' in regularization['l1']:
-                    self._coef1 = regularization['l1']['coef']
+                if "coef" in regularization["l1"]:
+                    self._coef1 = regularization["l1"]["coef"]
                 else:
-                    raise ValueError('No coefficient specified for l1 regularization term.')
+                    raise ValueError("No coefficient specified for l1 regularization term.")
 
-            if 'l2' in regularization:
+            if "l2" in regularization:
                 self._has_l2 = True
-                if 'coef' in regularization['l2']:
-                    self._coef2 = regularization['l2']['coef']
+                if "coef" in regularization["l2"]:
+                    self._coef2 = regularization["l2"]["coef"]
                 else:
-                    raise ValueError('No coefficient specified for l2 regularization term.')
+                    raise ValueError("No coefficient specified for l2 regularization term.")
 
-            if 'network_lasso' in regularization:
+            if "network_lasso" in regularization:
                 self._has_network_lasso = True
-                if 'coef' in regularization['network_lasso']:
-                    self._lambda_network_lasso = regularization['network_lasso']['coef']
+                if "coef" in regularization["network_lasso"]:
+                    self._lambda_network_lasso = float(regularization["network_lasso"]["coef"])
                 else:
-                    msg = 'No coefficient specified for Network Lasso regularization term.'
-                    raise ValueError(msg)
+                    raise ValueError(
+                        "No coefficient specified for Network Lasso regularization term."
+                    )
 
-                if 'edges' in regularization['network_lasso']:
-                    self._edges = regularization['network_lasso']['edges']
-                    self._num_edges, em = self._edges.shape
-                    # Loop over edges to see if a node is listed there that isn't
-                    # present in the data. This matters!  That means a category exists;
-                    # we simply have no hard data about the probability associated with
-                    # that category. We will *still* be able to predict a probability
-                    # by the graph structure, provided it is connected to at least one
-                    # node for which we *do* have hard data.
-                    for index, row in self._edges.iterrows():
-                        if row['country1'] not in self._categories:
-                            self._categories.append(row['country1'])
-                        if row['country2'] not in self._categories:
-                            self._categories.append(row['country2'])
-
-                    # Wait to create D until we have the data
+                if "edges" in regularization["network_lasso"]:
+                    self._edges = regularization["network_lasso"]["edges"]
+                    self._num_edges, _ = self._edges.shape
+                    for _, row in self._edges.iterrows():
+                        if row["country1"] not in self._categories:
+                            self._categories.append(row["country1"])
+                        if row["country2"] not in self._categories:
+                            self._categories.append(row["country2"])
                 else:
-                    msg = 'Edges not specified for Network Lasso regularization term.'
-                    raise ValueError(msg)
+                    raise ValueError(
+                        "Edges not specified for Network Lasso regularization term."
+                    )
 
-            if (self._has_l1 or self._has_l2) and 'prior' in regularization:
+            if (self._has_l1 or self._has_l2) and "prior" in regularization:
                 self._has_prior = True
-                self._prior = regularization['prior']
+                self._prior: Any = regularization["prior"]
 
-    def initialize(self, x, covariate_class_sizes=None,
-                   smoothing=1.0, save_flag=False,
-                   save_prefix=None, na_signifier=None,
-                   verbose=False):
-        """Initialize variables once data has been specified.
-
-        Parameters
-        ----------
-        x : array
-            Observation corresponding to this feature.
-        covariate_class_sizes : array
-            Size of covariate classes, if applicable.
-        smoothing : float
-            Overall smoothing factor, on top of the relative
-            smoothing specified in __init__. Defaults to 1.0,
-            indicating no change to the default smoothing.
-        save_flag : boolean
-            Flag indicating whether to save intermediate results.
-        save_prefix : string or None.
-            Prefix for filename. Actual filename will use this prefix
-            followed by the name of this feature, with a .pckl extension.
-        na_signifier : string or None
-            Indicating how missing data is marked. If specified, missing
-            data is handled by a special category whose parameter is
-            fixed at 0. Defaults to None.
-        verbose : bool
-            Flag specifying whether to print mildly helpful info.
-            Defaults to False.
-
-        """
+    def initialize(
+        self,
+        x: npt.NDArray[Any],
+        smoothing: float = 1.0,
+        save_flag: bool = False,
+        save_prefix: str | None = None,
+        verbose: bool = False,
+        covariate_class_sizes: npt.NDArray[Any] | None = None,
+        na_signifier: Any = None,
+    ) -> None:
+        """Compute feature-specific state from data."""
         self._num_obs = len(x)
         self._verbose = verbose
 
-        # Final list of categories consists of all categories specified via
-        # regularization terms as well as all the categories listed in the data
         self._categories = list(set(x).union(self._categories))
         self._num_categories = len(self._categories)
-        self._category_hash = {key: i for (key, i) in zip(self._categories, range(self._num_categories))}
+        self._category_hash: dict[Any, int] = {
+            key: i for (key, i) in zip(self._categories, range(self._num_categories), strict=True)
+        }
 
-        # If we are using the Network Lasso, compute the relevant matrix, D.
         if self._has_network_lasso:
             D = np.zeros((self._num_edges, self._num_categories))
-            ne, em = self._edges.shape
+            _, em = self._edges.shape
             ir = 0
-            for index, row in self._edges.iterrows():
-                # Check that nodes are in data
-                i = self._category_hash[row['country1']]
-                j = self._category_hash[row['country2']]
-                if em >= 3:
-                    lmbda = row['weight']
-                else:
-                    lmbda = 1.
-
+            for _, row in self._edges.iterrows():
+                i = self._category_hash[row["country1"]]
+                j = self._category_hash[row["country2"]]
+                lmbda = float(row["weight"]) if em >= 3 else 1.0
                 D[ir, i] = lmbda
                 D[ir, j] = -lmbda
                 ir += 1
             self._D = sparse.coo_matrix(D).tocsr()
             self._lambda_network_lasso *= smoothing
 
-        # If there is a value corresponding to "unknown category", label it
-        # appropriately. We will make sure the corresponding parameter is
-        # always 0, since we make no prediction in this case.
         if na_signifier is not None and na_signifier in self._categories:
             self._na_index = self._category_hash[na_signifier]
         else:
             self._na_index = -1
 
-        # Store, not the data themselves, but integers representing the
-        # categories.
-        self.x = np.zeros(self._num_obs, dtype=np.int)
-        cnt = np.zeros(self._num_categories, dtype=np.int)
-        for (ix, i) in zip(x, range(self._num_obs)):
+        self.x: IntArray = np.zeros(self._num_obs, dtype=np.int64)
+        cnt: IntArray = np.zeros(self._num_categories, dtype=np.int64)
+        for ix, i in zip(x, range(self._num_obs), strict=True):
             cnt[self._category_hash[ix]] += 1
             self.x[i] = self._category_hash[ix]
 
-        # Replace coef1 (a float or dictionary) with lambda1 (a vector of weights)
-        # Possibility #1: coef1 is a float, no prior provided. In this case,
-        # all categories get the same weight, coef1 * smoothing.
-        #
-        # Possibility #2: coef1 is a float, prior provided. In this case,
-        # lambda should put weight zero on any categories not represented in the prior.
-        # all categories with prior specified get the same weight, coef1 * smoothing.
-        #
-        # Possibility #3: coef1 is a dictionary, no prior. In this case,
-        # lambda should put weight zero on any categories not represented in coef1.
-        # Any categories represented in coef1 get weight coef1[category] * smoothing.
-        #
-        # Possibility #4: coef1 is a dictionary, prior provided. In this case,
-        # lambda should put weight zero on any categories not represented *in both*
-        # coef1 and prior. Any categories represented in both coef1 and prior
-        # get weight coef1[category] * smoothing
+        self._lambda1 = np.zeros(self._num_categories)
         if self._has_l1:
-            if type(self._coef1) == float:
-                if self._has_prior:
-                    self._lambda1 = np.zeros(self._num_categories)
-                    l = self._coef1 * smoothing
-                    for key in self._prior:
-                        self._lambda1[self._category_hash[key]] = l
-                else:
-                    self._lambda1 = np.full(self._num_categories, self._coef1 * smoothing)
-            else:
-                if self._has_prior:
-                    self._lambda1 = np.zeros(self._num_categories)
-                    for key, value in self._coef1.iteritems():
-                        if key in self._prior:
-                            self._lambda1[self._category_hash[key]] = value * smoothing
-                else:
-                    self._lambda1 = np.zeros(self._num_categories)
-                    for key, value in self._coef1.iteritems():
-                        self._lambda1[self._category_hash[key]] = value * smoothing
+            self._lambda1 = self._compute_lambda(self._coef1, smoothing)
 
-
+        self._lambda2 = np.zeros(self._num_categories)
         if self._has_l2:
-            if type(self._coef2) == float:
-                if self._has_prior:
-                    self._lambda2 = np.zeros(self._num_categories)
-                    l = self._coef2 * smoothing
-                    for key in self._prior:
-                        self._lambda2[self._category_hash[key]] = l
-                else:
-                    self._lambda2 = np.full(self._num_categories, self._coef2 * smoothing)
-            else:
-                if self._has_prior:
-                    self._lambda2 = np.zeros(self._num_categories)
-                    for key, value in self._coef2.iteritems():
-                        if key in self._prior:
-                            self._lambda2[self._category_hash[key]] = value * smoothing
-                else:
-                    self._lambda2 = np.zeros(self._num_categories)
-                    for key, value in self._coef2.iteritems():
-                        self._lambda2[self._category_hash[key]] = value * smoothing
+            self._lambda2 = self._compute_lambda(self._coef2, smoothing)
 
         if (self._has_l1 or self._has_l2) and self._has_prior:
-            prior = np.zeros(self._num_categories)
-            for key, value in self._prior.iteritems():
-                prior[self._category_hash[key]] = value
-            self._prior = prior
+            prior_vec = np.zeros(self._num_categories)
+            for key, value in self._prior.items():
+                prior_vec[self._category_hash[key]] = value
+            self._prior = prior_vec
 
-
-        self._AtA = sparse.dia_matrix((cnt, 0),
-                                      shape=(self._num_categories, self._num_categories),
-                                      dtype=np.int)
-        self.p = np.zeros(self._num_categories)
+        self._AtA = sparse.dia_matrix(
+            (cnt.astype(float), 0),
+            shape=(self._num_categories, self._num_categories),
+        )
+        self.p: FloatArray = np.zeros(self._num_categories)
 
         if covariate_class_sizes is None:
-            self._ccs = cnt
+            self._ccs = cnt.astype(float)
         else:
-            self._ccs = self._compute_Atz(covariate_class_sizes)
+            self._ccs = self._compute_Atz(np.asarray(covariate_class_sizes, dtype=float))
 
         if self._verbose:
-            print 'Number of categories: {0:d}'.format(self._num_categories)
-            if self._has_edges:
-                print 'Number of edges: {0:d}'.format(self._num_edges)
+            print(f"Number of categories: {self._num_categories:d}")
+            if self._has_network_lasso:
+                print(f"Number of edges: {self._num_edges:d}")
 
         if save_flag:
             self._save_self = True
             if save_prefix is None:
-                self._filename = '{0:s}.pckl'.format(self._name)
+                self._filename = f"{self._name}.pckl"
             else:
-                self._filename = '{0:s}_{1:s}.pckl'.format(save_prefix, self._name)
+                self._filename = f"{save_prefix}_{self._name}.pckl"
             self._save()
         else:
             self._filename = None
             self._save_self = False
 
+    def _compute_lambda(self, coef: float | dict[Any, float], smoothing: float) -> FloatArray:
+        """Build the per-category regularization-weight vector."""
+        result = np.zeros(self._num_categories)
+        if isinstance(coef, (int, float)):
+            scaled = float(coef) * smoothing
+            if self._has_prior:
+                for key in self._prior:
+                    result[self._category_hash[key]] = scaled
+            else:
+                result[:] = scaled
+        else:
+            for key, value in coef.items():
+                if self._has_prior and key not in self._prior:
+                    continue
+                result[self._category_hash[key]] = float(value) * smoothing
+        return result
 
-    def _save(self):
+    def _save(self) -> None:
         """Save parameters so model fitting can be continued later."""
-        mv = {}
-        mv['num_obs'] = self._num_obs
-        mv['categories'] = self._categories
-        mv['num_categories'] = self._num_categories
-        mv['category_hash'] = self._category_hash
-
-        mv['has_l1'] = self._has_l1
+        assert self._filename is not None
+        mv: dict[str, Any] = {
+            "num_obs": self._num_obs,
+            "categories": self._categories,
+            "num_categories": self._num_categories,
+            "category_hash": self._category_hash,
+            "has_l1": self._has_l1,
+            "has_l2": self._has_l2,
+            "has_network_lasso": self._has_network_lasso,
+            "has_prior": self._has_prior,
+            "na_index": self._na_index,
+            "x": self.x,
+            "p": self.p,
+            "AtA": self._AtA,
+            "ccs": self._ccs,
+            "verbose": self._verbose,
+            "use_cvx": self._use_cvx,
+            "solver": self._solver,
+            "name": self._name,
+            "save_self": self._save_self,
+        }
         if self._has_l1:
-            mv['coef1'] = self._coef1
-            mv['lambda1'] = self._lambda1
-        mv['has_l2'] = self._has_l2
+            mv["coef1"] = self._coef1
+            mv["lambda1"] = self._lambda1
         if self._has_l2:
-            mv['coef2'] = self._coef2
-            mv['lambda2'] = self._lambda2
-        mv['has_network_lasso'] = self._has_network_lasso
+            mv["coef2"] = self._coef2
+            mv["lambda2"] = self._lambda2
         if self._has_network_lasso:
-            mv['num_edges'] = self._num_edges
-            mv['D'] = self._D
-            mv['lambda_network_lasso'] = self._lambda_network_lasso
-        mv['has_prior'] = self._has_prior
+            mv["num_edges"] = self._num_edges
+            mv["D"] = self._D
+            mv["lambda_network_lasso"] = self._lambda_network_lasso
         if self._has_prior:
-            mv['prior'] = self._prior
+            mv["prior"] = self._prior
 
-        mv['na_index'] = self._na_index
-        mv['x'] = self.x
-        mv['p'] = self.p
-        mv['AtA'] = self._AtA
-        mv['verbose'] = self._verbose
-        mv['use_cvx'] = self._use_cvx
-        mv['solver'] = self._solver
-        mv['name'] = self._name
-        mv['save_self'] = self._save_self
+        with open(self._filename, "wb") as f:
+            pickle.dump(mv, f)
 
-        f = open(self._filename, 'w')
-        pickle.dump(mv, f)
-        f.close()
-
-    def _load(self, filename):
+    def _load(self, filename: str) -> None:
         """Load parameters from a previous model fitting session."""
-        f = open(filename)
-        mv = pickle.load(f)
-        f.close()
+        with open(filename, "rb") as f:
+            mv = pickle.load(f)
 
         self._filename = filename
-        self._num_obs = mv['num_obs']
-        self._categories = mv['categories']
-        self._num_categories = mv['num_categories']
-        self._category_hash = mv['category_hash']
-        self._has_l1 = mv['has_l1']
+        self._num_obs = mv["num_obs"]
+        self._categories = mv["categories"]
+        self._num_categories = mv["num_categories"]
+        self._category_hash = mv["category_hash"]
+        self._has_l1 = mv["has_l1"]
         if self._has_l1:
-            self._lambda1 = mv['lambda1']
-        self._has_l2 = mv['has_l2']
+            self._lambda1 = mv["lambda1"]
+            self._coef1 = mv.get("coef1", 0.0)
+        self._has_l2 = mv["has_l2"]
         if self._has_l2:
-            self._lambda2 = mv['lambda2']
-        self._has_network_lasso = mv['has_network_lasso']
+            self._lambda2 = mv["lambda2"]
+            self._coef2 = mv.get("coef2", 0.0)
+        self._has_network_lasso = mv["has_network_lasso"]
         if self._has_network_lasso:
-            self._num_edges = mv['num_edges']
-            self._D = mv['D']
-            self._lambda_network_lasso = mv['lambda_network_lasso']
-        self._has_prior = mv['has_prior']
+            self._num_edges = mv["num_edges"]
+            self._D = mv["D"]
+            self._lambda_network_lasso = mv["lambda_network_lasso"]
+        self._has_prior = mv["has_prior"]
         if self._has_prior:
-            self._prior = mv['prior']
-        self._na_index = mv['na_index']
-        self.x = mv['x']
-        self.p = mv['p']
-        self._AtA = mv['AtA']
-        self._verbose = mv['verbose']
-        self._use_cvx = mv['use_cvx']
-        self._solver = mv['solver']
-        self._name = mv['name']
-        self._save_self = mv['save_self']
+            self._prior = mv["prior"]
+        self._na_index = mv["na_index"]
+        self.x = mv["x"]
+        self.p = mv["p"]
+        self._AtA = mv["AtA"]
+        self._ccs = mv.get("ccs", np.zeros(self._num_categories))
+        self._verbose = mv["verbose"]
+        self._use_cvx = mv["use_cvx"]
+        self._solver = mv["solver"]
+        self._name = mv["name"]
+        self._save_self = mv["save_self"]
 
-    def optimize(self, fpumz, rho):
-        """Optimize this Feature's parameters.
-
-        Solves the optimization problem:
-           minimize \rho/2 * \| A*q + b \|_2^2
-                      + \| diag(\lambda_1) * (q - q_prior) \|_1
-                      + \| diag(\lambda_2)^(1/2) * (q - q_prior) \|_2^2
-                      + \lambda_nl * \| D*q \|_1
-           s.t. ccs' * A * q = 0
-        where b = \bar{f}^k + u^k - \bar{z}^k - A*q^k, and ccs
-        is the vector of covariance class sizes. (In most
-        cases that will just be a vector of ones).
+    def optimize(self, fpumz: FloatArray, rho: float) -> FloatArray:
+        """Solve the per-feature primal step via cvxpy.
 
         Parameters
         ----------
         fpumz : (m,) ndarray
-            Vector representing \bar{f}^k + u^k - \bar{z}^k
+            Vector representing :math:`\\bar{f}^k + u^k - \\bar{z}^k`.
         rho : float
             ADMM parameter. Must be positive.
 
         Returns
         -------
         fkp1 : (m,) ndarray
-           Vector representing this Feature's contribution to the response.
-
-        Notes
-        -----
-        The unconstrained problem listed above has a non-smooth
-        objective. It is equivalent to the following quadratic
-        program with linear inequality constraints:
-           minimize q' * (A'*A + (2 / \rho) * diag(\lambda_2)) * q
-                        + 2 * q' * (A' * b - (2 / \rho) * diag(\lambda_2) * q_prior)
-                        + (2 / \rho) * \lambda_1' * t
-                        + (2 / \rho) * \lambda_nl * sum(s)
-           subject to   c' * q = 0
-                        0 <= t
-                        0 <= s
-                        -t <= q - q_prior <= t
-                        -s <= D*q <= s
-        with optimization variables q, t, s. We use cvxpy to solve this
-        equivalent problem. The size of this problem is independent of
-        the number of training examples, and is governed strictly by the
-        number of categories, and the specified number of connections.
-        In our tests, cvxpy performs admirably. In situations where we
-        have a large number of categories, or the number of connections
-        is large, it might make sense to invest the time to write a
-        custom solver that takes into account the structure of the
-        problem. Specifically, noting that A'*A is a diagonal matrix,
-        and D has a specific sparsity pattern: each row of D contains
-        two non-zero elements, one equal to +1, the other equal to -1.
+            Vector representing this feature's contribution to the response.
         """
         b = fpumz - self._compute_Az(self.p)
         Atb = self._compute_Atz(b)
 
         if self._has_l2 and self._has_prior:
-            Atb -= (2. / rho) * np.multiply(self._lambda2, self._prior)
+            Atb -= (2.0 / rho) * np.multiply(self._lambda2, self._prior)
 
         q = cvx.Variable(self._num_categories)
 
         if self._has_l2:
-            AtA = cvx.Constant(self._AtA
-                               + sparse.dia_matrix( ((2. / rho) * self._lambda2, 0),
-                                                    shape=(self._num_categories,
-                                                           self._num_categories),
-                                                    dtype=np.float))
+            AtA = cvx.Constant(
+                self._AtA
+                + sparse.dia_matrix(
+                    ((2.0 / rho) * self._lambda2, 0),
+                    shape=(self._num_categories, self._num_categories),
+                )
+            )
         else:
             AtA = cvx.Constant(self._AtA)
 
-        Atb = cvx.Constant(Atb)
+        Atb_const = cvx.Constant(Atb)
 
-        obj = cvx.quad_form(q, AtA) + 2. * (Atb.T * q)
+        obj: Any = cvx.quad_form(q, AtA) + 2.0 * (Atb_const.T @ q)
 
         c = cvx.Constant(self._ccs)
-        constraints = [c.T * q == 0]
+        constraints: list[Any] = [c.T @ q == 0]
 
         if self._has_l1:
+            q_prior = self._prior if self._has_prior else np.zeros(self._num_categories)
             t = cvx.Variable(self._num_categories)
-            lmbda1 = cvx.Constant((2 / rho) * self._lambda1)
-            obj += (self._lambda1.T * t)
-            constraints += [0 <= t[:],
-                            0 <= t[:] + q[:] - q_prior[:],
-                            0 <= t[:] - q[:] + q_prior[:]]
+            obj = obj + (self._lambda1 @ t) * (2.0 / rho)
+            constraints += [
+                t >= 0,
+                t + q - q_prior >= 0,
+                t - q + q_prior >= 0,
+            ]
 
         if self._has_network_lasso:
             s = cvx.Variable(self._num_edges)
             D = cvx.Constant(self._D)
-            obj += (2 / rho) * self._lambda_network_lasso * cvx.sum_entries(s)
-            constraints += [0 <= s[:],
-                            0 <= s[:] + D * q[:],
-                            0 <= s[:] - D * q[:]]
+            obj = obj + (2.0 / rho) * self._lambda_network_lasso * cvx.sum(s)
+            constraints += [
+                s >= 0,
+                s + D @ q >= 0,
+                s - D @ q >= 0,
+            ]
 
         prob = cvx.Problem(cvx.Minimize(obj), constraints)
         prob.solve(verbose=self._verbose, solver=self._solver)
-        #, abstol=1e-3, reltol=1e-3, feastol=1e-3)
 
-        if prob.status != cvx.OPTIMAL and prob.status != cvx.OPTIMAL_INACCURATE:
-            print "Categorical variable failed to converge."
-            sys.exit()
+        if prob.status not in (cvx.OPTIMAL, cvx.OPTIMAL_INACCURATE):
+            raise RuntimeError(
+                f"Categorical variable {self._name!r} failed to converge "
+                f"(status={prob.status!r})."
+            )
 
-        self.p = q.value.A.squeeze()
+        value = q.value
+        if value is None:
+            raise RuntimeError(f"Categorical variable {self._name!r} produced no solution.")
+        self.p = np.asarray(value, dtype=float).ravel()
         if self._na_index >= 0:
-            self.p[self.naIndex] = 0
+            self.p[self._na_index] = 0.0
 
         if self._save_self:
             self._save()
 
         return self._compute_Az(self.p)
 
-    #@cython.boundscheck(False)
-    #@cython.wraparound(False)
-    #def _compute_Az(self, np.ndarray[DTYPE_t, ndim=1] z):
-    def _compute_Az(self, z):
-        """Compute A*z.
-
-        The sparsity pattern of A enables us to compute A*z in time
-        proportional to the number of elements of z, regardless of the
-        number of rows of A.
-        """
-        #cdef long i, ix
-        #cdef long m = self._num_obs
-        #cdef long[:] x = self.x
-        #cdef np.ndarray[DTYPE_t, ndim=1] Az = np.zeros(m)
-
+    def _compute_Az(self, z: FloatArray) -> FloatArray:
+        """Compute ``A @ z`` exploiting the indicator structure of ``A``."""
         m = self._num_obs
         x = self.x
         Az = np.zeros(m)
-
         for i in range(m):
-            ix = x[i]
-            Az[i] = z[ix]
+            Az[i] = z[x[i]]
         return Az
 
-    #@cython.boundscheck(False)
-    #@cython.wraparound(False)
-    #def _compute_Atz(self, np.ndarray[DTYPE_t, ndim=1] z):
-    def _compute_Atz(self, z):
-        """Compute A' * z.
-
-        The sparsity pattern of A enables us to compute A' * z in time
-        proportional to the number of elements of z, regardless of the
-        number of columns of A.
-        """
-        #cdef long i, ix
-        #cdef long m = self._num_obs
-        #cdef long K = self._num_categories
-        #cdef long[:] x = self.x
-        #cdef np.ndarray[DTYPE_t, ndim=1] Atz = np.zeros(K)
-
-        m = self._num_obs
+    def _compute_Atz(self, z: FloatArray) -> FloatArray:
+        """Compute ``A.T @ z`` exploiting the indicator structure of ``A``."""
         K = self._num_categories
         x = self.x
         Atz = np.zeros(K)
-
-        for i in range(m):
-            ix = x[i]
-            Atz[ix] += z[i]
+        for i in range(self._num_obs):
+            Atz[x[i]] += z[i]
         return Atz
 
-    def compute_dual_tol(self, y):
-        """Computes this Feature's contribution to the dual residual tolerance.
-
-        See gamdist.
-        """
+    def compute_dual_tol(self, y: FloatArray) -> float:
+        """Compute this feature's contribution to the dual residual tolerance."""
         Aty = self._compute_Atz(y)
-        return Aty.dot(Aty)
+        return float(Aty.dot(Aty))
 
-    def num_params(self):
-        """Number of parameters.
-
-        Returns the number of parameters used in this component of the
-        model. This is for a different purpose than the degrees of
-        freedom. The latter is used for model selection; the former for
-        assessing convergence. Thus, the presence of regularization does
-        not impact this function.
-        """
+    def num_params(self) -> int:
+        """Number of parameters in this feature."""
         return len(self.p)
 
-    def category_index(self, observation):
-        """Return category index of ith observation.
+    def category_index(self, observation: int) -> tuple[int, int]:
+        """Return ``(category_index, num_categories)`` for the given training-row index."""
+        return int(self.x[observation]), self._num_categories
 
-        Parameters
-        ----------
-         observation : int
-           Observation index. Must be between 0 and the number of
-           observations. No check is performed.
+    def dof(self) -> float:
+        """Effective degrees of freedom contributed by this feature."""
+        return float(len(self.p) - 1)
 
-        Returns
-        -------
-         cindex : int
-           Category index of the ith observation.
-         csize : int
-           Number of categories.
-
-        """
-        return self.x[observation], self._num_categories
-
-    def dof(self):
-        """Degrees of freedom.
-
-        Returns the degrees of freedom associated with this component of
-        the model. Categorical features nominally have 1 degree of
-        freedom for each category (known as "levels" among
-        statisticians). Since we include an affine term in the overall
-        model, there is an ambiguity in the parameters that can be
-        resolved in various ways. We apply the constraint that the
-        average contribution, over all observations in the training set,
-        is zero. This has the effect of reducing the DOF by 1. Any
-        regularization included reduces the effective DOF even further,
-        but I have not had a chance to research this properly. Thus we
-        just return the number of levels minus 1.
-
-        Returns
-         dof : float
-             Degrees of freedom.
-        """
-        return len(self.p) - 1
-
-    def predict(self, x):
-        """Apply fitted model to feature.
-
-        Parameters
-        ----------
-         X : array
-             Data for this feature.
-
-        Returns
-        -------
-         f_j : array
-             The contribution of this feature to the predicted
-             response.
-        """
-        prediction = np.zeros(len(x))
-        for i in range(len(x)):
-            if x[i] in self._category_hash:
-                prediction[i] = self.p[self._category_hash[x[i]]]
+    def predict(self, X: npt.NDArray[Any]) -> FloatArray:
+        """Apply fitted model to feature."""
+        prediction = np.zeros(len(X))
+        for i in range(len(X)):
+            if X[i] in self._category_hash:
+                prediction[i] = self.p[self._category_hash[X[i]]]
         return prediction
 
+    def _plot(self, true_fn: Any = None) -> None:
+        """Plot is not yet implemented for categorical features."""
+        return None
 
-    def plot(self):
-        ''' Creates a bar chart showing the transformed response for each level. '''
-        # For categorical features, plot a bar graph for each category
-        # showing the estimated values, confidence intervals, and number
-        # of observations in each category. If Family is Binomial,
-        # show 0/1 observations on top/bottom of graph. Otherwise
-        # show observations on bottom of graph.
-        #
-        # We could permit fancier plots for geographic data e.g.
-        # Choropleth maps.
-        pass
-
-    def __str__(self):
-        ''' Print confidence intervals on level values, significance tests? '''
-        # For categorical features, print value associated
-        # with each category, a confidence interval, and
-        # a p-value against the null hypothesis that the
-        # parameter is 0. For Network Lasso, print p-value
-        # against null hypothesis that related categories
-        # have the same value.
-        desc = 'Feature {0:s}\n'.format(self._name)
-        for i in self._categories:
-            desc += '  {0:s}: {1:.06g}\n'.format(i, self.p[self._category_hash[i]])
+    def __str__(self) -> str:
+        desc = f"Feature {self._name}\n"
+        for cat in self._categories:
+            desc += f"  {cat}: {self.p[self._category_hash[cat]]:.06g}\n"
         return desc

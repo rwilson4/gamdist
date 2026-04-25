@@ -20,19 +20,39 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
-import sys
+from __future__ import annotations
+
+import os
 import pickle
-import multiprocessing as mp
+from collections.abc import Callable
+from typing import Any, Literal
+
 import numpy as np
+import numpy.typing as npt
+import pandas as pd
+import scipy.linalg as linalg
 import scipy.special as special
 import scipy.stats as stats
-import scipy.linalg as linalg
-from matplotlib import pyplot as plt
-from .feature import _Feature
+
+from . import proximal_operators as po
 from .categorical_feature import _CategoricalFeature
+from .feature import _Feature
 from .linear_feature import _LinearFeature
 from .spline_feature import _SplineFeature
-import proximal_operators as po
+
+FloatArray = npt.NDArray[np.float64]
+
+Family = Literal["normal", "binomial", "poisson", "gamma", "exponential", "inverse_gaussian"]
+Link = Literal[
+    "identity",
+    "logistic",
+    "probit",
+    "complementary_log_log",
+    "log",
+    "reciprocal",
+    "reciprocal_squared",
+]
+FeatureType = Literal["categorical", "linear", "spline"]
 
 # To do:
 # - Hierarchical models
@@ -97,7 +117,13 @@ CANONICAL_LINKS = {'normal': 'identity',
 # Binomial: probit and complementary log-log
 # Gamma: identity and log
 
-def _plot_convergence(prim_res, prim_tol, dual_res, dual_tol, dev):
+def _plot_convergence(
+    prim_res: list[float],
+    prim_tol: list[float],
+    dual_res: list[float],
+    dual_tol: list[float],
+    dev: list[float],
+) -> None:
     """Plot convergence progress.
 
     We deem the algorithm to have converged when the prime and dual
@@ -126,55 +152,35 @@ def _plot_convergence(prim_res, prim_tol, dual_res, dual_tol, dev):
     -------
      (nothing)
     """
-    fig = plt.figure(figsize=(12., 10.))
+    import matplotlib.pyplot as plt
+
+    dev_arr = np.asarray(dev, dtype=float)
+    fig = plt.figure(figsize=(12.0, 10.0))
 
     ax = fig.add_subplot(211)
-    ax.plot(range(len(prim_res)), prim_res, 'b-', label='Primal Residual')
-    ax.plot(range(len(prim_tol)), prim_tol, 'b--', label='Primal Tolerance')
-    ax.plot(range(len(dual_res)), dual_res, 'r-', label='Dual Residual')
-    ax.plot(range(len(dual_tol)), dual_tol, 'r--', label='Dual Tolerance')
-    ax.set_yscale('log')
-    plt.xlabel('Iteration', fontsize=24)
-    plt.ylabel('Residual', fontsize=24)
+    ax.plot(range(len(prim_res)), prim_res, "b-", label="Primal Residual")
+    ax.plot(range(len(prim_tol)), prim_tol, "b--", label="Primal Tolerance")
+    ax.plot(range(len(dual_res)), dual_res, "r-", label="Dual Residual")
+    ax.plot(range(len(dual_tol)), dual_tol, "r--", label="Dual Tolerance")
+    ax.set_yscale("log")
+    plt.xlabel("Iteration", fontsize=24)
+    plt.ylabel("Residual", fontsize=24)
     plt.legend(fontsize=24, loc=3)
 
     ax = fig.add_subplot(212)
-    ax.plot(range(len(dev)), (dev - dev[-1]) + 1e-10, 'b-', label='Deviance')
-    ax.set_yscale('log')
-    plt.xlabel('Iteration', fontsize=24)
-    plt.ylabel('Deviance Suboptimality', fontsize=24)
+    ax.plot(range(len(dev_arr)), (dev_arr - dev_arr[-1]) + 1e-10, "b-", label="Deviance")
+    ax.set_yscale("log")
+    plt.xlabel("Iteration", fontsize=24)
+    plt.ylabel("Deviance Suboptimality", fontsize=24)
 
     plt.gcf().subplots_adjust(bottom=0.1)
     plt.gcf().subplots_adjust(left=0.1)
-    plt.show()
-
-def _feature_wrapper(f):
-    """Wrapper for feature optimization.
-
-    This is a wrapper for use with multi-threaded versions.
-    Unfortunately Python threads are *terrible*, so this doesn't
-    actually get used.
-
-    Parameters
-    ------
-     f : list
-         Array of inputs. f[0] is the name of the feature. f[1]
-         is the feature object itself. f[2] is N * fpumz (the
-         vector input to the feature during optimization). f[3]
-         is the ADMM parameter, rho.
-
-    Returns
-    -------
-     name : str
-         The name of the feature. (The same as the input.)
-     f_j : array
-         The array of fitted values returned by the feature.
-    """
-
-    return f[0], f[1].optimize(f[2], f[3])
+    if os.environ.get("MPLBACKEND", "") not in {"Agg", "agg"}:
+        plt.show()  # pragma: no cover
+    plt.close(fig)
 
 
-def _gamma_dispersion(dof, dev, num_obs):
+def _gamma_dispersion(dof: float, dev: float, num_obs: int) -> float:
     """Gamma dispersion.
 
     This function estimates the dispersion of a Gamma family with p
@@ -215,9 +221,15 @@ def _gamma_dispersion(dof, dev, num_obs):
         raise ValueError('Could not estimate gamma dispersion.')
 
 class GAM:
-    def __init__(self, family=None, link=None, dispersion=None,
-                 estimate_overdispersion=False, name=None,
-                 load_from_file=None):
+    def __init__(
+        self,
+        family: Family | None = None,
+        link: Link | None = None,
+        dispersion: float | None = None,
+        estimate_overdispersion: bool = False,
+        name: str | None = None,
+        load_from_file: str | None = None,
+    ) -> None:
         """Generalized Additive Model
 
         This is the constructor for a Generalized Additive Model.
@@ -313,7 +325,7 @@ class GAM:
         if family is None:
             raise ValueError('Family not specified.')
         elif family not in FAMILIES:
-            raise ValueError('{} family not supported'.format(family))
+            raise ValueError(f'{family} family not supported')
         elif family == 'exponential':
             # Exponential is a special case of Gamma with a dispersion of 1.
             self._family = 'gamma'
@@ -322,16 +334,16 @@ class GAM:
             self._family = family
 
         if link is None:
-            self._link = CANONICAL_LINKS[family]
+            self._link = CANONICAL_LINKS[self._family]
         elif link in LINKS:
             self._link = link
         else:
-            raise ValueError('{} link not supported'.format(link))
+            raise ValueError(f'{link} link not supported')
 
         if dispersion is not None:
             self._known_dispersion = True
             self._dispersion = dispersion
-        elif (self._family in FAMILIES_WITH_KNOWN_DISPERSIONS.keys()
+        elif (self._family in FAMILIES_WITH_KNOWN_DISPERSIONS
               and not estimate_overdispersion):
             self._known_dispersion = True
             self._dispersion = FAMILIES_WITH_KNOWN_DISPERSIONS[self._family]
@@ -342,8 +354,8 @@ class GAM:
             self._eval_link = lambda x: x
             self._eval_inv_link = lambda x: x
         elif self._link == 'logistic':
-            self._eval_link = lambda x: np.log( x / (1. - x) )
-            self._eval_inv_link = lambda x: np.exp(x) / (1 + np.exp(x))
+            self._eval_link = lambda x: special.logit(x)
+            self._eval_inv_link = lambda x: special.expit(x)
         elif self._link == 'probit':
             # Inverse CDF of the Gaussian distribution
             self._eval_link = lambda x: stats.norm.ppf(x)
@@ -362,72 +374,59 @@ class GAM:
             self._eval_inv_link = lambda x: 1. / np.sqrt(x)
 
         self._estimate_overdispersion = estimate_overdispersion
-        self._features = {}
+        self._features: dict[str, _Feature] = {}
         self._offset = 0.0
         self._num_features = 0
         self._fitted = False
         self._name = name
 
-    def _save(self):
-        """Save state.
-
-        Save the model to file to make predictions later, or continue
-        a fitting session.
-
-        """
-        mv = {}
-        mv['family'] = self._family
-        mv['link'] = self._link
-        mv['known_dispersion'] = self._known_dispersion
+    def _save(self) -> None:
+        """Save model state to a pickle file."""
+        mv: dict[str, Any] = {}
+        mv["family"] = self._family
+        mv["link"] = self._link
+        mv["known_dispersion"] = self._known_dispersion
         if self._known_dispersion:
-            mv['dispersion'] = self._dispersion
+            mv["dispersion"] = self._dispersion
 
-        mv['estimate_overdispersion'] = self._estimate_overdispersion
-        mv['offset'] = self._offset
-        mv['num_features'] = self._num_features
-        mv['fitted'] = self._fitted
-        mv['name'] = self._name
+        mv["estimate_overdispersion"] = self._estimate_overdispersion
+        mv["offset"] = self._offset
+        mv["num_features"] = self._num_features
+        mv["fitted"] = self._fitted
+        mv["name"] = self._name
 
-        features = {}
-        for name, feature in self._features.iteritems():
-            features[name] = {'type': feature.__type__,
-                              'filename': feature._filename
-                              }
+        features: dict[str, dict[str, Any]] = {}
+        for name, feature in self._features.items():
+            features[name] = {
+                "type": feature.__type__,
+                "filename": feature._filename,
+            }
+        mv["features"] = features
 
-        mv['features'] = features
-
-        # mv['rho'] = self._rho
-        mv['num_obs'] = self._num_obs
-        mv['y'] = self._y
-        mv['weights'] = self._weights
-        mv['has_covariate_classes'] = self._has_covariate_classes
+        mv["num_obs"] = self._num_obs
+        mv["y"] = self._y
+        mv["weights"] = self._weights
+        mv["has_covariate_classes"] = self._has_covariate_classes
         if self._has_covariate_classes:
-            mv['covariate_class_sizes'] = self._covariate_class_sizes
+            mv["covariate_class_sizes"] = self._covariate_class_sizes
 
-        mv['f_bar'] = self.f_bar
-        mv['z_bar'] = self.z_bar
-        mv['u'] = self.u
-        mv['prim_res'] = self.prim_res
-        mv['dual_res'] = self.dual_res
-        mv['prim_tol'] = self.prim_tol
-        mv['dual_tol'] = self.dual_tol
-        mv['dev'] = self.dev
+        mv["f_bar"] = self.f_bar
+        mv["z_bar"] = self.z_bar
+        mv["u"] = self.u
+        mv["prim_res"] = self.prim_res
+        mv["dual_res"] = self.dual_res
+        mv["prim_tol"] = self.prim_tol
+        mv["dual_tol"] = self.dual_tol
+        mv["dev"] = self.dev
 
-        filename = '{0:s}_model.pckl'.format(self._name)
-        f = open(filename, 'w')
-        pickle.dump(mv, f)
-        f.close()
+        filename = f"{self._name}_model.pckl"
+        with open(filename, "wb") as f:
+            pickle.dump(mv, f)
 
-
-    def _load(self, filename):
-        """Load state.
-
-        Load a model from file to make predictions.
-
-        """
-        f = open(filename)
-        mv = pickle.load(f)
-        f.close()
+    def _load(self, filename: str) -> None:
+        """Load a saved model from a pickle file."""
+        with open(filename, "rb") as f:
+            mv = pickle.load(f)
 
         self._filename = filename
         self._family = mv['family']
@@ -444,7 +443,7 @@ class GAM:
 
         self._features = {}
         features = mv['features']
-        for (name, feature) in features.iteritems():
+        for (name, feature) in features.items():
             if feature['type'] == 'categorical':
                 self._features[name] = _CategoricalFeature(load_from_file=feature['filename'])
             elif feature['type'] == 'linear':
@@ -475,8 +474,8 @@ class GAM:
             self._eval_link = lambda x: x
             self._eval_inv_link = lambda x: x
         elif self._link == 'logistic':
-            self._eval_link = lambda x: np.log( x / (1. - x) )
-            self._eval_inv_link = lambda x: np.exp(x) / (1 + np.exp(x))
+            self._eval_link = lambda x: special.logit(x)
+            self._eval_inv_link = lambda x: special.expit(x)
         elif self._link == 'probit':
             # Inverse CDF of the Gaussian distribution
             self._eval_link = lambda x: stats.norm.ppf(x)
@@ -495,7 +494,14 @@ class GAM:
             self._eval_inv_link = lambda x: 1. / np.sqrt(x)
 
 
-    def add_feature(self, name, type, transform=None, rel_dof=None, regularization=None):
+    def add_feature(
+        self,
+        name: str,
+        type: FeatureType,
+        transform: Callable[[npt.NDArray[Any]], npt.NDArray[Any]] | None = None,
+        rel_dof: float | None = None,
+        regularization: dict[str, Any] | None = None,
+    ) -> None:
         """Add a feature
 
         Add a feature to a Generalized Additive Model. (An implicit
@@ -559,21 +565,32 @@ class GAM:
          (nothing)
 
         """
-        if type == 'categorical':
+        f: _Feature
+        if type == "categorical":
             f = _CategoricalFeature(name, regularization=regularization)
-        elif type == 'linear':
+        elif type == "linear":
             f = _LinearFeature(name, transform, regularization=regularization)
-        elif type == 'spline':
-            f = _SplineFeature(name, transform, rel_dof)
+        elif type == "spline":
+            f = _SplineFeature(name, transform, rel_dof if rel_dof is not None else 4.0)
         else:
-            raise ValueError('Features of type {} not supported.'.format(type))
+            raise ValueError(f"Features of type {type} not supported.")
 
         self._features[name] = f
         self._num_features += 1
 
-    def fit(self, X, y, covariate_class_sizes=None, weights=None,
-            optimizer='admm', smoothing=1., save_flag=False,
-            verbose=False, plot_convergence=False, max_its=100):
+    def fit(
+        self,
+        X: pd.DataFrame,
+        y: npt.NDArray[Any],
+        covariate_class_sizes: npt.NDArray[Any] | None = None,
+        weights: npt.NDArray[Any] | None = None,
+        optimizer: str = "admm",
+        smoothing: float = 1.0,
+        save_flag: bool = False,
+        verbose: bool = False,
+        plot_convergence: bool = False,
+        max_its: int = 100,
+    ) -> None:
         """Fit a Generalized Additive Model to data.
 
         Note regarding binomial families: many data sets include
@@ -661,35 +678,36 @@ class GAM:
         if len(X) != len(y):
             raise ValueError('Inconsistent number of observations in X and y.')
 
-        num_threads = 1
         self._rho = 0.1
         eps_abs = 1e-3
         eps_rel = 1e-3
-        # Note that X may include columns that do not correspond to features in our model
-        # (for example, if the user is experimenting with leaving out features to assess
-        # importance). Thus, the real number of features is self._num_features, not
-        # num_features as in the next line.
-        self._num_obs, num_features = X.shape
+        # X may have extra columns not registered as features; ignore them. The
+        # real number of features is self._num_features.
+        self._num_obs, _num_features_in_X = X.shape
 
-        self._y = y.flatten()
+        self._y = np.asarray(y).flatten()
         self._weights = weights
 
         if covariate_class_sizes is not None:
             self._has_covariate_classes = True
             self._covariate_class_sizes = covariate_class_sizes
-            mean_response = float(np.sum(self._y)) / np.sum(self._covariate_class_sizes)
-            self._offset = self._eval_link(mean_response)
+            mean_response = float(np.sum(self._y)) / float(np.sum(self._covariate_class_sizes))
+            self._offset = float(self._eval_link(mean_response))
         else:
             self._has_covariate_classes = False
             self._covariate_class_sizes = None
-            self._offset = self._eval_link(np.mean(self._y))
+            self._offset = float(self._eval_link(np.mean(self._y)))
 
-        fj = {}
+        fj: dict[str, FloatArray] = {}
 
-        for name, feature in self._features.iteritems():
-            feature.initialize(X[name].values, smoothing=smoothing,
-                               covariate_class_sizes=self._covariate_class_sizes,
-                               save_flag=save_flag, save_prefix=self._name)
+        for name, feature in self._features.items():
+            feature.initialize(
+                np.asarray(X[name].values),
+                smoothing=smoothing,
+                covariate_class_sizes=self._covariate_class_sizes,
+                save_flag=save_flag,
+                save_prefix=self._name,
+            )
             fj[name] = np.zeros(self._num_obs)
 
         self.f_bar = np.full((self._num_obs,), self._offset / self._num_features)
@@ -703,41 +721,26 @@ class GAM:
 
         z_new = np.zeros(self._num_obs)
 
-        if num_threads > 1:
-            p = mp.Pool(num_threads)
-        else:
-            p = None
-
         for i in range(max_its):
             if verbose:
-                print 'Iteration {0:d}'.format(i)
-                print 'Optimizing primal variables'
+                print(f"Iteration {i:d}")
+                print("Optimizing primal variables")
 
             fpumz = self._num_features * (self.f_bar + self.u - self.z_bar)
-            fj_new = {}
+            fj_new: dict[str, FloatArray] = {}
             f_new = np.full((self._num_obs,), self._offset)
-            if False: #num_threads > 1:
-                # Getting python to run a for loop in parallel
-                # might as well be impossible :-(
-                args = [(i, self._features[i], fpumz, self._rho) for i in self._features.keys()]
-                results = p.map(_feature_wrapper, args)
-                for i in results:
-                    fj_new[i[0]] = i[1]
-                    f_new += i[1]
-
-            else:
-                for name, feature in self._features.iteritems():
-                    if verbose:
-                          print 'Optimizing {0:s}'.format(name)
-                    fj_new[name] = feature.optimize(fpumz, self._rho)
-                    f_new += fj_new[name]
+            for name, feature in self._features.items():
+                if verbose:
+                    print(f"Optimizing {name:s}")
+                fj_new[name] = feature.optimize(fpumz, self._rho)
+                f_new += fj_new[name]
 
             f_new /= self._num_features
 
             if verbose:
-                print 'Optimizing dual variables'
+                print("Optimizing dual variables")
 
-            z_new = self._optimize(self.u + f_new, self._num_features, p)
+            z_new = self._optimize(self.u + f_new, self._num_features)
 
             self.u += f_new - z_new
 
@@ -747,7 +750,7 @@ class GAM:
             norm_bz = 0.0
             norm_aty = 0.0
             num_params = 0
-            for name, feature in self._features.iteritems():
+            for name, feature in self._features.items():
                 dr = ((fj_new[name] - fj[name])
                       + (z_new - self.z_bar)
                       - (f_new - self.f_bar))
@@ -785,15 +788,11 @@ class GAM:
 
             if prim_res < prim_tol and dual_res < dual_tol:
                 if verbose:
-                    print 'Fit converged'
+                    print("Fit converged")
                 break
         else:
             if verbose:
-                print 'Fit did not converge'
-
-        if num_threads > 1:
-            p.close()
-            p.join()
+                print("Fit did not converge")
 
         self._fitted = True
         if save_flag:
@@ -803,8 +802,8 @@ class GAM:
             _plot_convergence(self.prim_res, self.prim_tol, self.dual_res,
                               self.dual_tol, self.dev)
 
-    def _optimize(self, upf, N, p=None):
-        """Optimize \bar{z}.
+    def _optimize(self, upf: FloatArray, N: int) -> FloatArray:
+        r"""Optimize \bar{z}.
 
         Solves the optimization problem:
            minimize L(N*z) + \rho/2 * \| N*z - N*u - N*\bar{f} \|_2^2
@@ -841,7 +840,10 @@ class GAM:
              Result of the above optimization problem.
         """
 
-        prox = None
+        # Different prox operators have slightly different signatures (e.g. the
+        # binomial variant takes a covariate-class-sizes argument), so the
+        # dispatch is typed as Any to keep mypy quiet here.
+        prox: Any
         if self._family == 'normal':
             if self._link == 'identity':
                 prox = po._prox_normal_identity
@@ -854,33 +856,35 @@ class GAM:
                 prox = po._prox_binomial
 
             if self._has_covariate_classes:
-                return (1. / N) * prox(N*upf, self._rho, self._y,
-                                       self._covariate_class_sizes,
-                                       self._weights, self._eval_inv_link, p=p)
+                return (1.0 / N) * prox(
+                    N * upf,
+                    self._rho,
+                    self._y,
+                    self._covariate_class_sizes,
+                    self._weights,
+                    self._eval_inv_link,
+                )
 
-        elif self._family == 'poisson':
-            if self._link == 'log':
-                prox = po._prox_poisson_log
-            else:
-                prox = po._prox_poisson
-        elif self._family == 'gamma':
-            if self._link == 'reciprocal':
-                prox = po._prox_gamma_reciprocal
-            else:
-                prox = po._prox_gamma
-        elif self._family == 'inverse_gaussian':
-            if self._link == 'reciprocal_squared':
-                prox = po._prox_inv_gaussian_reciprocal_squared
-            else:
-                prox = po._prox_inv_gaussian
+        elif self._family == "poisson":
+            prox = po._prox_poisson_log if self._link == "log" else po._prox_poisson
+        elif self._family == "gamma":
+            prox = po._prox_gamma_reciprocal if self._link == "reciprocal" else po._prox_gamma
+        elif self._family == "inverse_gaussian":
+            prox = (
+                po._prox_inv_gaussian_reciprocal_squared
+                if self._link == "reciprocal_squared"
+                else po._prox_inv_gaussian
+            )
         else:
-            msg = 'Family {0:s} and Link Function {1:s} not (yet) supported.'
-            raise ValueError(msg.format(self._family, self._link))
+            raise ValueError(
+                f"Family {self._family!s} and Link Function {self._link!s} not (yet) supported."
+            )
 
-        return (1. / N) * prox(N*upf, self._rho, self._y, w=self._weights,
-                               inv_link=self._eval_inv_link, p=p)
+        return (1.0 / N) * prox(
+            N * upf, self._rho, self._y, w=self._weights, inv_link=self._eval_inv_link
+        )
 
-    def predict(self, X):
+    def predict(self, X: pd.DataFrame) -> FloatArray:
         """Apply fitted model to features.
 
         Parameters
@@ -902,16 +906,18 @@ class GAM:
 
         """
         if not self._fitted:
-            raise AttributeError('Model not yet fit.')
+            raise AttributeError("Model not yet fit.")
 
-        num_points, m = X.shape
+        num_points, _ = X.shape
         eta = np.full((num_points,), self._offset)
-        for name, feature in self._features.iteritems():
-            eta += feature.predict(X[name].values)
+        for name, feature in self._features.items():
+            eta = eta + feature.predict(np.asarray(X[name].values))
 
-        return self._eval_inv_link(eta)
+        return np.asarray(self._eval_inv_link(eta), dtype=float)
 
-    def confidence_intervals(self, X, prediction=False, width=0.95):
+    def confidence_intervals(
+        self, X: pd.DataFrame, prediction: bool = False, width: float = 0.95
+    ) -> FloatArray:
         """Confidence intervals on predictions.
 
         NOT YET IMPLEMENTED
@@ -969,9 +975,13 @@ class GAM:
              Lower and upper bounds on the confidence interval
              associated with each prediction.
         """
-        pass
+        raise NotImplementedError("confidence_intervals is not yet implemented")
 
-    def plot(self, name, true_fn=None):
+    def plot(
+        self,
+        name: str,
+        true_fn: Callable[[FloatArray], FloatArray] | None = None,
+    ) -> None:
         """Plot the component of the modelf for a particular feature.
 
         Parameters
@@ -989,8 +999,14 @@ class GAM:
         """
         self._features[name]._plot(true_fn=true_fn)
 
-    def deviance(self, X=None, y=None, covariate_class_sizes=None, w=None):
-        """Deviance
+    def deviance(
+        self,
+        X: pd.DataFrame | None = None,
+        y: npt.NDArray[Any] | None = None,
+        covariate_class_sizes: npt.NDArray[Any] | None = None,
+        w: npt.NDArray[Any] | None = None,
+    ) -> float:
+        r"""Deviance
 
         This function works in one of two ways:
 
@@ -1032,44 +1048,57 @@ class GAM:
             mu = self._eval_inv_link(self._num_features * self.f_bar)
             w = self._weights
             if self._has_covariate_classes:
-                m = self._covariate_class_sizes
+                m: npt.NDArray[Any] | float = self._covariate_class_sizes
             else:
-                m = 1.
+                m = 1.0
         else:
             mu = self.predict(X)
-            if covariate_class_sizes is None:
+            if covariate_class_sizes is not None:
                 m = covariate_class_sizes
             else:
-                m = 1.
+                m = 1.0
 
-        if self._family == 'normal':
+        if self._family == "normal":
             y_minus_mu = y - mu
             if w is None:
-                return y_minus_mu.dot(y_minus_mu)
-            else:
-                return w.dot(y_minus_mu * y_minus_mu)
-        elif self._family == 'binomial':
+                return float(y_minus_mu.dot(y_minus_mu))
+            return float(w.dot(y_minus_mu * y_minus_mu))
+        if self._family == "binomial":
+            # Clip mu away from 0 and 1 so log(mu) and log1p(-mu) stay finite.
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
             if w is None:
-                return -2. * np.sum( y * np.log(mu) + (m - y) * np.log1p(-mu) )
-            else:
-                return -2. *  w.dot( y * np.log(mu) + (m - y) * np.log1p(-mu) )
-        elif self._family == 'poisson':
+                return float(-2.0 * np.sum(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c)))
+            return float(-2.0 * w.dot(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c)))
+        if self._family == "poisson":
+            # `y * log(y / mu)` has the conventional limit 0 when y = 0.
+            y_log_term = np.where(y > 0, y * np.log(np.where(y > 0, y, 1.0) / mu), 0.0)
+            term = y_log_term - (y - mu)
             if w is None:
-                return 2. * np.sum(y * np.log(y / mu) - (y - mu))
-            else:
-                return 2. * w.dot(y * np.log(y / mu) - (y - mu))
-        elif self._family == 'gamma':
+                return float(2.0 * np.sum(term))
+            return float(2.0 * w.dot(term))
+        if self._family == "gamma":
+            # Gamma deviance is undefined at y = 0 or mu <= 0 in the strict
+            # sense; clip both to a tiny positive number to keep training
+            # iterations from blowing up when mu transiently goes negative
+            # (gamma + reciprocal link does not constrain mu).
+            tiny = np.finfo(float).tiny
+            y_safe = np.where(y > 0, y, tiny)
+            mu_safe = np.where(mu > 0, mu, tiny)
             if w is None:
-                return 2. * np.sum(-1. * np.log(y / mu) + (y - mu) / mu)
-            else:
-                return 2. * w.dot(-1. * np.log(y / mu) + (y - mu) / mu)
-        elif self._family == 'inverse_gaussian':
+                return float(
+                    2.0 * np.sum(-1.0 * np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe)
+                )
+            return float(
+                2.0 * w.dot(-1.0 * np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe)
+            )
+        if self._family == "inverse_gaussian":
             if w is None:
-                return np.sum( (y - mu) * (y - mu) / (mu * mu * y) )
-            else:
-                return w.dot( (y - mu) * (y - mu) / (mu * mu * y) )
+                return float(np.sum((y - mu) * (y - mu) / (mu * mu * y)))
+            return float(w.dot((y - mu) * (y - mu) / (mu * mu * y)))
+        raise ValueError(f"Unsupported family {self._family!r}")
 
-    def dispersion(self, formula='deviance'):
+    def dispersion(self, formula: str = "deviance") -> float:
         """Dispersion
 
         Returns the dispersion associated with the model. Depending on
@@ -1102,39 +1131,30 @@ class GAM:
                 'fletcher'
 
         """
-        if self._family == 'normal':
+        if self._family == "normal":
             if self._known_dispersion:
-                return self._dispersion
-            else:
-                sigma2 = self.deviance() / (self._num_obs - self.dof())
-                return sigma2
-        elif self._family == 'binomial':
+                return float(self._dispersion)
+            return float(self.deviance() / (self._num_obs - self.dof()))
+        if self._family == "binomial":
             if self._known_dispersion:
-                return self._dispersion
-            elif self._estimate_overdispersion:
-                return self._binomial_overdispersion()
-            else:
-                return 1.
-        elif self._family == 'poisson':
-            return 1.
-        elif self._family == 'gamma':
+                return float(self._dispersion)
+            if self._estimate_overdispersion:
+                return float(self._binomial_overdispersion())
+            return 1.0
+        if self._family == "poisson":
+            return 1.0
+        if self._family == "gamma":
             if self._known_dispersion:
-                return self._dispersion
-            else:
-                return _gamma_dispersion(self.dof(), self.deviance(), self._num_obs)
-                # This equation is a first-order approximation valid when nu is
-                # large (see Section 8.3.6 of [GLM])
-                #Dbar = self.deviance() / self._num_obs
-                #return Dbar * (6. + Dbar) / (6. + 2. * Dbar)
-        elif self._family == 'inverse_gaussian':
+                return float(self._dispersion)
+            return _gamma_dispersion(self.dof(), self.deviance(), self._num_obs)
+        if self._family == "inverse_gaussian":
             if self._known_dispersion:
-                return self._dispersion
-            else:
-                sigma2 = self.deviance() / (self._num_obs - self.dof())
-                return sigma2
+                return float(self._dispersion)
+            return float(self.deviance() / (self._num_obs - self.dof()))
+        raise ValueError(f"Unsupported family {self._family!r}")
 
-    def _binomial_overdispersion(self, formula=None):
-        """Over-Dispersion
+    def _binomial_overdispersion(self, formula: str | None = None) -> float:
+        r"""Over-Dispersion
 
         Parameters
         ----------
@@ -1276,7 +1296,7 @@ class GAM:
         """
 
         if not self._has_covariate_classes:
-            return 1.
+            return 1.0
 
         min_cc_replicates = 1
         min_replication = 2
@@ -1309,18 +1329,22 @@ class GAM:
         # We need to take care to loop over the features in a
         # consistent order, so we create the fnames array just to give
         # an arbitrary but consistent ordering.
-        r = {}
-        covariate_class = np.zeros((self._num_obs,))
-        fnames = self._features.keys()
+        r: dict[int, int] = {}
+        covariate_class = np.zeros((self._num_obs,), dtype=np.int64)
+        fnames = sorted(self._features)
         for i in range(self._num_obs):
             multi_index = []
             dims = []
             for fname in fnames:
-                cindex, csize = self._features[fname].category_index(i)
+                # Overdispersion is only meaningful when every feature is
+                # categorical, so a runtime AttributeError on a non-
+                # categorical feature is the correct behavior.
+                feat = self._features[fname]
+                cindex, csize = feat.category_index(i)  # type: ignore[attr-defined]
                 multi_index.append(cindex)
                 dims.append(csize)
 
-            cci = np.ravel_multi_index(multi_index, dims)
+            cci = int(np.ravel_multi_index(multi_index, dims))
             covariate_class[i] = cci
             r[cci] = r.get(cci, 0) + 1
 
@@ -1334,15 +1358,15 @@ class GAM:
             if j > max_replication:
                 max_replication = j
 
-        if ((num_cc_with_replicates >= min_cc_replicates
-             and max_replication >= min_replication)):
+        if (num_cc_with_replicates >= min_cc_replicates
+             and max_replication >= min_replication):
             has_replication = True
         else:
             has_replication = False
 
-        if ((num_cc_with_replicates >= des_cc_replicates
+        if (num_cc_with_replicates >= des_cc_replicates
              and max_replication >= des_replication
-             and replication_dof >= des_replication_dof)):
+             and replication_dof >= des_replication_dof):
             has_desired_replication = True
         else:
             has_desired_replication = False
@@ -1353,55 +1377,47 @@ class GAM:
             else:
                 formula = 'pearson'
 
-        if has_replication and formula == 'replication':
-            trials = {}
-            successes = {}
-            # Initial loop to pool trials/successes.
+        if has_replication and formula == "replication":
+            trials: dict[int, float] = {}
+            successes: dict[int, float] = {}
             for i in range(self._num_obs):
-                cci = covariate_class[i]
-                trials[cci] = trials.get(cci, 0) + self._covariate_class_sizes[i]
-                successes[cci] = successes.get(cci, 0) + self._y[i]
+                cci = int(covariate_class[i])
+                trials[cci] = trials.get(cci, 0.0) + float(self._covariate_class_sizes[i])
+                successes[cci] = successes.get(cci, 0.0) + float(self._y[i])
 
-            # Final loop to compute dispersion
-            s2 = 0.
+            s2 = 0.0
             for i in range(self._num_obs):
-                cci = covariate_class[i]
-                pi = float(successes[cci]) / trials[cci]
+                cci = int(covariate_class[i])
+                pi = successes[cci] / trials[cci]
                 num = self._y[i] - self._covariate_class_sizes[i] * pi
                 denom = self._covariate_class_sizes[i] * pi * (1 - pi)
-                s2 += num * num / denom
+                s2 += float(num * num / denom)
 
-            # Divide by the error DOF
             s2 /= replication_dof
             self._known_dispersion = True
             self._dispersion = s2
             return s2
         else:
             mu = self._eval_inv_link(self._num_features * self.f_bar)
-            m = self._covariate_class_sizes
-            bl_var = np.multiply(mu, 1. - mu)
-            res = self._y - np.multiply(m, mu)
-            num = np.multiply(res, res)
-            denom = np.multiply(m, bl_var)
+            m_arr = self._covariate_class_sizes
+            bl_var = np.multiply(mu, 1.0 - mu)
+            res = self._y - np.multiply(m_arr, mu)
+            num_p = np.multiply(res, res)
+            denom_p = np.multiply(m_arr, bl_var)
             n_minus_p = self._num_obs - self.dof()
-            s2 = np.sum(np.divide(num, denom)) / n_minus_p
+            s2 = float(np.sum(np.divide(num_p, denom_p)) / n_minus_p)
             self._known_dispersion = True
             self._dispersion = s2
             return s2
 
-    def dof(self):
-        """Degrees of Freedom
-
-        Returns the degrees of freedom associated with this model.
-        Simply adds up the degrees of freedom associated with each
-        feature.
-        """
-        dof = 1. # Affine factor
-        for name, feature in self._features.iteritems():
+    def dof(self) -> float:
+        """Degrees of freedom: sum of feature DOFs plus the affine intercept."""
+        dof = 1.0  # Affine factor
+        for _, feature in self._features.items():
             dof += feature.dof()
         return dof
 
-    def aic(self):
+    def aic(self) -> float:
         """Akaike Information Criterion
 
         Returns the AIC for the fitted model, useful for choosing
@@ -1424,11 +1440,11 @@ class GAM:
         # return (self.deviance() / self._num_obs
         #          + 2. * p * self.dispersion() / self._num_obs)
 
-    def aicc(self):
+    def aicc(self) -> float:
         # Eqn 6.32 on p. 304 of [GAMr]
-        pass
+        raise NotImplementedError("aicc is not yet implemented")
 
-    def ubre(self, gamma=1.0):
+    def ubre(self, gamma: float = 1.0) -> float:
         """Un-Biased Risk Estimator
 
         Returns the Un-Biased Risk Estimator as discussed in Sections
@@ -1441,7 +1457,7 @@ class GAM:
         """
         return self.deviance() + 2. * gamma * self.dispersion() * self.dof()
 
-    def gcv(self, gamma=1.0):
+    def gcv(self, gamma: float = 1.0) -> float:
         """Generalized Cross Validation
 
         This function returns the Generalized Cross Validation (GCV)
@@ -1455,7 +1471,7 @@ class GAM:
         denom = self._num_obs - gamma * self.dof()
         return self._num_obs * self.deviance() / (denom * denom)
 
-    def summary(self):
+    def summary(self) -> None:
         """Print summary statistics associated with fitted model.
 
         Prints statistics for the overall model, as well as for
@@ -1485,23 +1501,22 @@ class GAM:
         at least on the estimated dispersion parameter.
         """
 
-        print 'Model Statistics'
-        print '----------------'
+        print("Model Statistics")
+        print("----------------")
         if not self._known_dispersion:
-            print 'phi: {0:0.06g}'.format(self.dispersion())
-        print 'edof: {0:0.0f}'.format(self.dof())
-        print 'Deviance: {0:0.06g}'.format(self.deviance())
-        print 'AIC: {0:0.06g}'.format(self.aic())
-        #print 'AICc: {0:0.06g}'.format(aicc)
+            print(f"phi: {self.dispersion():0.06g}")
+        print(f"edof: {self.dof():0.0f}")
+        print(f"Deviance: {self.deviance():0.06g}")
+        print(f"AIC: {self.aic():0.06g}")
 
         if self._known_dispersion:
-            print 'UBRE: {0:0.06g}'.format(self.ubre())
+            print(f"UBRE: {self.ubre():0.06g}")
         else:
-            print 'GCV: {0:0.06g}'.format(self.gcv())
+            print(f"GCV: {self.gcv():0.06g}")
 
-        print ''
-        print 'Features'
-        print '--------'
+        print()
+        print("Features")
+        print("--------")
 
-        for name, feature in self._features.iteritems():
-            print feature.__str__()
+        for _name, feature in self._features.items():
+            print(str(feature))

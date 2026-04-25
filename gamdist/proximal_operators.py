@@ -1,5 +1,5 @@
 # Copyright 2017 Match Group, LLC
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License"); you
 # may not use this file except in compliance with the License. You may
 # obtain a copy of the License at
@@ -20,52 +20,68 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import Any
+
 import numpy as np
+import numpy.typing as npt
 from scipy.optimize import minimize_scalar
 
-def _prox_normal_identity(v, mu, y, w=None, inv_link=None, p=None):
-    # Assume there are m elements in v and y.
-    # mu is a scalar
-    # w is either None, or has m elements.
-    if w is None:
-        # If no weights, this takes:
-        #  - m multiplies
-        #  - m+1 adds
-        #  - m divides
-        return (y + mu * v) / (1. + mu)
-    else:
-        # If weights, this takes:
-        #  - 2m multiplies
-        #  - 2m adds
-        #  - m divides
-        return (w * y + mu * v) / (w + mu)
+FloatArray = npt.NDArray[np.float64]
+InvLink = Callable[[float], float]
 
-def _prox_normal(v, mu, y, w=None, inv_link=None, p=None):
+
+def _prox_normal_identity(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
     if w is None:
-        def obj_fun(x, _v, _y):
+        return (y + mu * v) / (1.0 + mu)
+    return (w * y + mu * v) / (w + mu)
+
+
+def _prox_normal(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    assert inv_link is not None
+
+    if w is None:
+
+        def obj_fun(x: float, _v: float, _y: float) -> float:
             ilx = inv_link(x)
             return 0.5 * ilx * ilx - _y * ilx + 0.5 * mu * (x - _v) * (x - _v)
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))])
+        return np.array(
+            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
+        )
 
-    else:
-        def obj_fun(x, _v, _y, _w):
-            ilx = inv_link(x)
-            return _w * (0.5 * ilx * ilx - _y * ilx) + 0.5 * mu * (x - _v) * (x - _v)
+    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
+        ilx = inv_link(x)
+        return _w * (0.5 * ilx * ilx - _y * ilx) + 0.5 * mu * (x - _v) * (x - _v)
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i], w[i])).x for i in range(len(v))])
+    return np.array(
+        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
+    )
 
-def _prox_binomial_logit_scalar(xx):
-    v  = xx[0]
+
+def _prox_binomial_logit_scalar(xx: Sequence[float]) -> float:
+    v = xx[0]
     mu = xx[1]
-    y  = xx[2]
+    y = xx[2]
     m = xx[3]
-    if len(xx) >= 5:
-        w = xx[4]
-    else:
-        w = None
+    w: float | None = xx[4] if len(xx) >= 5 else None
 
-    beta = 0.8
     tol = 1e-3
     max_its = 100
 
@@ -75,68 +91,85 @@ def _prox_binomial_logit_scalar(xx):
     else:
         mu_v_plus_w_y = mu * v + w * y
 
-    for i in range(max_its):
-        expx = np.exp(x)
-        one_over_one_plus_expx = 1. / (1. + expx)
+    for _ in range(max_its):
+        expx = float(np.exp(x))
+        one_over_one_plus_expx = 1.0 / (1.0 + expx)
         if w is None:
             num = mu * x + m * expx * one_over_one_plus_expx - mu_v_plus_w_y
-            denom = mu + m * expx  * one_over_one_plus_expx * one_over_one_plus_expx
+            denom = mu + m * expx * one_over_one_plus_expx * one_over_one_plus_expx
         else:
             num = mu * x + w * m * expx * one_over_one_plus_expx - mu_v_plus_w_y
             denom = mu + w * m * expx * one_over_one_plus_expx * one_over_one_plus_expx
 
         dx = num / denom
-        x -= dx # * beta
+        x -= dx
         if abs(dx) < tol:
             return x
-    else:
-        raise ValueError('Dual variable update failed to converge.')
+
+    raise ValueError("Dual variable update failed to converge.")
 
 
-def _prox_binomial_logit(v, mu, y, ccs=None, w=None, inv_link=None, p=None):
-    if ccs is None:
-        m = np.ones(y.shape)
+def _prox_binomial_logit(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    ccs: FloatArray | None = None,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    m = np.ones(y.shape) if ccs is None else ccs
+    mu_arr = np.full(v.shape, mu)
+    items: list[Sequence[float]]
+    if w is None:
+        items = [tuple(t) for t in zip(v, mu_arr, y, m, strict=True)]
     else:
-        m = ccs
+        items = [tuple(t) for t in zip(v, mu_arr, y, m, w, strict=True)]
+    return np.array([_prox_binomial_logit_scalar(item) for item in items])
+
+
+def _prox_binomial(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    ccs: FloatArray | None = None,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    assert inv_link is not None
 
     if w is None:
-        if p is None:
-            return np.array(map(_prox_binomial_logit_scalar, zip(v, np.full(v.shape, mu), y, m)))
-        else:
-            return np.array(p.map(_prox_binomial_logit_scalar, zip(v, np.full(v.shape, mu), y, m)))
-    else:
-        if p is None:
-            return np.array(map(_prox_binomial_logit_scalar, zip(v, np.full(v.shape, mu), y, m, w)))
-        else:
-            return np.array(p.map(_prox_binomial_logit_scalar, zip(v, np.full(v.shape, mu), y, m, w)))
 
-
-def _prox_binomial(v, mu, y, ccs=None, w=None, inv_link=None, p=None):
-    if w is None:
-        def obj_fun(x, _v, _y):
+        def obj_fun(x: float, _v: float, _y: float) -> float:
             ilx = inv_link(x)
-            m = 1.
+            m = 1.0
             return (_y - m) * np.log1p(-ilx) - _y * np.log(ilx) + 0.5 * mu * (x - _v) * (x - _v)
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))])
-    else:
-        def obj_fun(x, _v, _y, _w):
-            ilx = inv_link(x)
-            m = 1.
-            return _w * (_y - m) * np.log1p(-ilx) - _w * _y * np.log(ilx) + 0.5 * mu * (x - _v) * (x - _v)
+        return np.array(
+            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
+        )
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i], w[i])).x for i in range(len(v))])
+    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
+        ilx = inv_link(x)
+        m = 1.0
+        return (
+            _w * (_y - m) * np.log1p(-ilx)
+            - _w * _y * np.log(ilx)
+            + 0.5 * mu * (x - _v) * (x - _v)
+        )
 
-def _prox_poisson_log_scalar(xx):
-    v  = xx[0]
+    return np.array(
+        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
+    )
+
+
+def _prox_poisson_log_scalar(xx: Sequence[float]) -> float:
+    v = xx[0]
     mu = xx[1]
-    y  = xx[2]
-    if len(xx) >= 4:
-        w = xx[3]
-    else:
-        w = None
+    y = xx[2]
+    w: float | None = xx[3] if len(xx) >= 4 else None
 
-    beta = 0.8
     tol = 1e-3
     max_its = 100
 
@@ -146,8 +179,8 @@ def _prox_poisson_log_scalar(xx):
     else:
         mu_v_plus_w_y = mu * v + w * y
 
-    for i in range(max_its):
-        expx = np.exp(x)
+    for _ in range(max_its):
+        expx = float(np.exp(x))
         if w is None:
             num = mu * x + expx - mu_v_plus_w_y
             denom = mu + expx
@@ -156,72 +189,113 @@ def _prox_poisson_log_scalar(xx):
             denom = mu + w * expx
 
         dx = num / denom
-        x -= dx # * beta
+        x -= dx
         if abs(dx) < tol:
             return x
-    else:
-        raise ValueError('Dual variable update failed to converge.')
+
+    raise ValueError("Dual variable update failed to converge.")
 
 
-def _prox_poisson_log(v, mu, y, w=None, inv_link=None, p=None):
+def _prox_poisson_log(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    mu_arr = np.full(v.shape, mu)
+    items: list[Sequence[float]]
     if w is None:
-        if p is None:
-            return np.array(map(_prox_poisson_log_scalar, zip(v, np.full(v.shape, mu), y)))
-        else:
-            return np.array(p.map(_prox_poisson_log_scalar, zip(v, np.full(v.shape, mu), y)))
+        items = [tuple(t) for t in zip(v, mu_arr, y, strict=True)]
     else:
-        if p is None:
-            return np.array(map(_prox_poisson_log_scalar, zip(v, np.full(v.shape, mu), y, w)))
-        else:
-            return np.array(p.map(_prox_poisson_log_scalar, zip(v, np.full(v.shape, mu), y, w)))
+        items = [tuple(t) for t in zip(v, mu_arr, y, w, strict=True)]
+    return np.array([_prox_poisson_log_scalar(item) for item in items])
 
-def _prox_poisson(v, mu, y, w=None, inv_link=None, p=None):
+
+def _prox_poisson(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    assert inv_link is not None
+
     if w is None:
-        def obj_fun(x, _v, _y):
+
+        def obj_fun(x: float, _v: float, _y: float) -> float:
             ilx = inv_link(x)
             return (ilx - _y * np.log(ilx)) + 0.5 * mu * (x - _v) * (x - _v)
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))])
-    else:
-        def obj_fun(x, _v, _y, _w):
-            ilx = inv_link(x)
-            return _w * (ilx - _y * np.log(ilx)) + 0.5 * mu * (x - _v) * (x - _v)
+        return np.array(
+            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
+        )
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i], w[i])).x for i in range(len(v))])
+    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
+        ilx = inv_link(x)
+        return _w * (ilx - _y * np.log(ilx)) + 0.5 * mu * (x - _v) * (x - _v)
+
+    return np.array(
+        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
+    )
 
 
-def _prox_gamma_reciprocal(v, mu, y, w=None, inv_link=None, p=None):
+def _prox_gamma_reciprocal(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
     if w is None:
         mu_v_minus_w_y = mu * v - y
-        return (0.5 / mu) * mu_v_minus_w_y + np.sqrt( mu_v_minus_w_y * mu_v_minus_w_y + (4 * mu))
-    else:
-        mu_v_minus_w_y = mu * v - w * y
-        return (0.5 / mu) * mu_v_minus_w_y + np.sqrt( mu_v_minus_w_y * mu_v_minus_w_y + (4 * mu) * w)
+        return (0.5 / mu) * mu_v_minus_w_y + np.sqrt(
+            mu_v_minus_w_y * mu_v_minus_w_y + (4 * mu)
+        )
+    mu_v_minus_w_y = mu * v - w * y
+    return (0.5 / mu) * mu_v_minus_w_y + np.sqrt(
+        mu_v_minus_w_y * mu_v_minus_w_y + (4 * mu) * w
+    )
 
-def _prox_gamma(v, mu, y, w=None, inv_link=None, p=None):
+
+def _prox_gamma(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    assert inv_link is not None
+
     if w is None:
-        def obj_fun(x, _v, _y):
+
+        def obj_fun(x: float, _v: float, _y: float) -> float:
             ilx = inv_link(x)
             return (np.log(ilx) + _y / ilx) + 0.5 * mu * (x - _v) * (x - _v)
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))])
-    else:
-        def obj_fun(x, _v, _y, _w):
-            ilx = inv_link(x)
-            return _w * (np.log(ilx) + _y / ilx) + 0.5 * mu * (x - _v) * (x - _v)
+        return np.array(
+            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
+        )
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i], w[i])).x for i in range(len(v))])
+    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
+        ilx = inv_link(x)
+        return _w * (np.log(ilx) + _y / ilx) + 0.5 * mu * (x - _v) * (x - _v)
 
-def _prox_inv_gaussian_reciprocal_squared_scalar(xx):
+    return np.array(
+        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
+    )
+
+
+def _prox_inv_gaussian_reciprocal_squared_scalar(xx: Sequence[float]) -> float:
     v = xx[0]
     mu = xx[1]
     y = xx[2]
-    if len(xx) >= 4:
-        w = xx[3]
-    else:
-        w = None
+    w: float | None = xx[3] if len(xx) >= 4 else None
 
-    beta = 0.8
     tol = 1e-3
     max_its = 100
 
@@ -231,7 +305,7 @@ def _prox_inv_gaussian_reciprocal_squared_scalar(xx):
     else:
         w_y_minus_mu_v = 0.5 * w * y - mu * v
 
-    for i in range(max_its):
+    for _ in range(max_its):
         if w is None:
             num = mu * z * z * z + w_y_minus_mu_v * z - 0.5
             denom = 3 * mu * z * z + w_y_minus_mu_v
@@ -240,34 +314,54 @@ def _prox_inv_gaussian_reciprocal_squared_scalar(xx):
             denom = 3 * mu * z * z + w_y_minus_mu_v
 
         dz = num / denom
-        z -= dz # * beta
+        z -= dz
         if abs(dz) < tol:
             return z * z
-    else:
-        raise ValueError('Dual variable update failed to converge.')
 
-def _prox_inv_gaussian_reciprocal_squared(v, mu, y, w=None, inv_link=None, p=None):
+    raise ValueError("Dual variable update failed to converge.")
+
+
+def _prox_inv_gaussian_reciprocal_squared(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    mu_arr = np.full(v.shape, mu)
+    items: list[Sequence[float]]
     if w is None:
-        if p is None:
-            return np.array(map(_prox_inv_gaussian_reciprocal_squared_scalar, zip(v, np.full(v.shape, mu), y)))
-        else:
-            return np.array(p.map(_prox_inv_gaussian_reciprocal_squared_scalar, zip(v, np.full(v.shape, mu), y)))
+        items = [tuple(t) for t in zip(v, mu_arr, y, strict=True)]
     else:
-        if p is None:
-            return np.array(map(_prox_inv_gaussian_reciprocal_squared_scalar, zip(v, np.full(v.shape, mu), y, w)))
-        else:
-            return np.array(p.map(_prox_inv_gaussian_reciprocal_squared_scalar, zip(v, np.full(v.shape, mu), y, w)))
+        items = [tuple(t) for t in zip(v, mu_arr, y, w, strict=True)]
+    return np.array([_prox_inv_gaussian_reciprocal_squared_scalar(item) for item in items])
 
-def _prox_inv_gaussian(v, mu, y, w=None, inv_link=None, p=None):
+
+def _prox_inv_gaussian(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    assert inv_link is not None
+
     if w is None:
-        def obj_fun(x, _v, _y):
-            ilx = inv_link(x)
-            return (-1. / ilx + 0.5 * _y * ilx * ilx) + 0.5 * mu * (x - _v) * (x - _v)
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))])
-    else:
-        def obj_fun(x, _v, _y, _w):
+        def obj_fun(x: float, _v: float, _y: float) -> float:
             ilx = inv_link(x)
-            return _w * (-1. / ilx + 0.5 * _y * ilx * ilx) + 0.5 * mu * (x - _v) * (x - _v)
+            return (-1.0 / ilx + 0.5 * _y * ilx * ilx) + 0.5 * mu * (x - _v) * (x - _v)
 
-        return np.array([minimize_scalar(obj_fun, args=(v[i], y[i], w[i])).x for i in range(len(v))])
+        return np.array(
+            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
+        )
+
+    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
+        ilx = inv_link(x)
+        return _w * (-1.0 / ilx + 0.5 * _y * ilx * ilx) + 0.5 * mu * (x - _v) * (x - _v)
+
+    return np.array(
+        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
+    )
