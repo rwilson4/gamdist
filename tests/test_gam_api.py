@@ -99,6 +99,20 @@ def test_aicc_overparameterized_returns_inf() -> None:
     assert mdl.aicc() == float("inf")
 
 
+def test_bic_matches_formula() -> None:
+    rng = np.random.default_rng(11)
+    n = 200
+    X = pd.DataFrame({"x": rng.normal(size=n)})
+    y = 2.0 * X["x"].values + rng.normal(size=n) * 0.1
+    mdl = GAM(family="normal")
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=20)
+
+    p = mdl.dof() + (0.0 if mdl._known_dispersion else 1.0)
+    # BIC - AIC == (log(n) - 2) * p
+    assert mdl.bic() - mdl.aic() == pytest.approx((np.log(n) - 2.0) * p)
+
+
 def test_inconsistent_X_y_lengths_raises() -> None:
     mdl = GAM(family="normal")
     mdl.add_feature(name="x", type="linear")

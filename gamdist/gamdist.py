@@ -61,7 +61,6 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Implement overdispersion for Poisson family
 # - Implement Multinomial, Proportional Hazards
 # - Implement outlier detection
-# - AICc, BIC, R-squared estimate
 # - Confidence intervals on mu, predictions (probably need to use Bootstrap but can
 #   do so intelligently)
 # - Confidence intervals on model parameters, p-values
@@ -77,7 +76,8 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # Done:
 # - Implement Gaussian, Binomial, Poisson, Gamma, Inv Gaussian,
 # - Plot splines
-# - Deviance (on training set and test set), AIC, Dispersion, GCV, UBRE
+# - Deviance (on training set and test set), AIC, AICc, BIC, R^2,
+#   Dispersion, GCV, UBRE
 # - Write documentation
 # - Check implementation of Gamma dispersion
 # - Implement probit, complementary log-log links.
@@ -1057,6 +1057,16 @@ class GAM:
             else:
                 m = 1.0
 
+        return self._deviance_from_mu(y, mu, m=m, w=w)
+
+    def _deviance_from_mu(
+        self,
+        y: npt.NDArray[Any],
+        mu: npt.NDArray[Any],
+        m: npt.NDArray[Any] | float = 1.0,
+        w: npt.NDArray[Any] | None = None,
+    ) -> float:
+        """Compute deviance for given response, mean, optional class sizes and weights."""
         if self._family == "normal":
             y_minus_mu = y - mu
             if w is None:
@@ -1467,6 +1477,55 @@ class GAM:
             return float("inf")
         return self.aic() + 2.0 * p * (p + 1) / (n - p - 1)
 
+    def bic(self) -> float:
+        """Bayesian Information Criterion.
+
+        Computed as
+
+            BIC = deviance / dispersion + log(n) * p
+
+        where ``p`` is the effective parameter count (``dof()``, plus
+        one when dispersion is estimated, matching ``aic()`` and
+        ``aicc()``) and ``n`` is the number of observations. As with
+        ``aic()``, the BIC is off by the same constant factor; only
+        differences are meaningful for model selection.
+        """
+        p = self.dof()
+        if not self._known_dispersion:
+            p += 1
+        return self.deviance() / self.dispersion() + float(np.log(self._num_obs)) * p
+
+    def null_deviance(self) -> float:
+        """Deviance of the intercept-only model on the training data.
+
+        The null model predicts the same mean response for every
+        observation: ``mean(y)`` (or ``sum(y) / sum(covariate_class_sizes)``
+        when binomial covariate classes were supplied at fit time).
+        """
+        y = self._y
+        if self._has_covariate_classes:
+            m: npt.NDArray[Any] | float = self._covariate_class_sizes
+            mean_response = float(np.sum(y)) / float(np.sum(m))
+        else:
+            m = 1.0
+            mean_response = float(np.mean(y))
+        mu = np.full_like(y, mean_response, dtype=float)
+        return self._deviance_from_mu(y, mu, m=m, w=self._weights)
+
+    def r_squared(self) -> float:
+        """Deviance-based pseudo-R^2.
+
+        Returns ``1 - deviance() / null_deviance()``. For a normal
+        family with identity link this is the conventional R^2; for
+        other families it is the deviance pseudo-R^2 of McCullagh and
+        Nelder. Returns ``nan`` when the null deviance is zero (the
+        response is constant), where pseudo-R^2 is undefined.
+        """
+        null_dev = self.null_deviance()
+        if null_dev == 0.0:
+            return float("nan")
+        return 1.0 - self.deviance() / null_dev
+
     def ubre(self, gamma: float = 1.0) -> float:
         """Un-Biased Risk Estimator
 
@@ -1513,15 +1572,15 @@ class GAM:
                      dispersion.
            AIC:      Akaike Information Criterion.
            AICc:     AIC with correction for finite data sets.
+           BIC:      Bayesian Information Criterion.
+           R^2:      Deviance-based pseudo-R^2.
            UBRE:     Unbiased Risk Estimator (if dispersion is known).
            GCV:      Generalized Cross Validation (if dispersion is estimated).
 
         For more details on these parameters, see the documentation
-        in the corresponding functions. It may also be helpful to
-        include an R^2 value where appropriate, and perhaps a p-value
-        for the model against the null model having just the affine
-        term. It would also be nice to have confidence intervals
-        at least on the estimated dispersion parameter.
+        in the corresponding functions. It would also be nice to have
+        confidence intervals at least on the estimated dispersion
+        parameter.
         """
 
         print("Model Statistics")
@@ -1532,6 +1591,8 @@ class GAM:
         print(f"Deviance: {self.deviance():0.06g}")
         print(f"AIC: {self.aic():0.06g}")
         print(f"AICc: {self.aicc():0.06g}")
+        print(f"BIC: {self.bic():0.06g}")
+        print(f"R^2: {self.r_squared():0.06g}")
 
         if self._known_dispersion:
             print(f"UBRE: {self.ubre():0.06g}")

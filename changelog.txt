@@ -1,3 +1,15 @@
+2026-04-25 : BIC and pseudo-R^2
+- Add GAM.bic() = deviance/dispersion + log(n) * p, matching the
+  parameter-counting convention used by aic()/aicc().
+- Add GAM.null_deviance() (deviance of the intercept-only model) and
+  GAM.r_squared() (deviance-based pseudo-R^2; classical R^2 for the
+  normal+identity case, NaN when null deviance is zero).
+- Refactor GAM.deviance() onto a private _deviance_from_mu(y, mu, m, w)
+  helper so null_deviance() reuses the per-family math.
+- summary() now prints BIC and R^2.
+- Remove "AICc, BIC, R-squared estimate" from the to-do list at the
+  top of gamdist.py.
+
 2026-04-25 : AICc
 - Implement GAM.aicc() using the Hurvich-Tsai small-sample correction
   AICc = AIC + 2p(p+1)/(n-p-1), matching the convention used by aic()
