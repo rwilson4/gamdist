@@ -68,16 +68,14 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Interactions
 # - Runtime optimization (Cython)
 # - Fit in parallel
-# - Residuals
-#   - Plot residuals against each predictor / unused predictors
 #
 # Done:
 # - Implement Gaussian, Binomial, Poisson, Gamma, Inv Gaussian,
 # - Plot splines
 # - Deviance (on training set and test set), AIC, AICc, BIC, R^2,
 #   Dispersion, GCV, UBRE
-# - Response, Pearson, deviance, Anscombe residuals;
-#   residual-vs-fitted and QQ plots
+# - Response, Pearson, deviance, Anscombe residuals; residual-vs-fitted,
+#   residual-vs-predictor, and QQ plots
 # - Write documentation
 # - Check implementation of Gamma dispersion
 # - Implement probit, complementary log-log links.
@@ -1209,6 +1207,57 @@ class GAM:
         stats.probplot(res, plot=ax2)
         ax2.set_title("Normal Q-Q")
 
+        fig.tight_layout()
+        return fig
+
+    def plot_residuals_vs_predictor(
+        self,
+        predictor: npt.ArrayLike,
+        *,
+        kind: Literal["response", "pearson", "deviance", "anscombe"] = "deviance",
+        name: str | None = None,
+    ) -> Any:
+        """Plot residuals against a predictor.
+
+        Useful for diagnosing fit adequacy: a clear pattern (curvature,
+        funnel shape, etc.) when ``predictor`` is a feature already in
+        the model suggests an unmodeled non-linearity or
+        heteroscedasticity. The same plot for a predictor *not* in the
+        model is a quick check on whether to add it.
+
+        Parameters
+        ----------
+        predictor : array-like of shape ``(n_obs,)``
+            Predictor values for each training observation. Must match
+            the length of the training data used to fit this model.
+            Categorical (string / object) predictors are plotted as a
+            categorical x-axis.
+        kind : ``"response"``, ``"pearson"``, ``"deviance"``, or ``"anscombe"``
+            Forwarded to ``residuals()``.
+        name : str, optional
+            Label for the x-axis and title.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+        """
+        import matplotlib.pyplot as plt
+
+        res = self.residuals(kind)
+        pred = np.asarray(predictor)
+        if pred.shape != (self._num_obs,):
+            raise ValueError(
+                f"predictor has shape {pred.shape}, "
+                f"expected ({self._num_obs},) to match training data"
+            )
+
+        label = name if name is not None else "predictor"
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.scatter(pred, res, s=10, alpha=0.6)
+        ax.axhline(0.0, color="grey", linewidth=0.5)
+        ax.set_xlabel(label)
+        ax.set_ylabel(f"{kind.capitalize()} residual")
+        ax.set_title(f"Residuals vs {label}")
         fig.tight_layout()
         return fig
 

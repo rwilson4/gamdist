@@ -177,3 +177,43 @@ def test_anscombe_inverse_gaussian_matches_formula() -> None:
 def test_plot_residuals_accepts_anscombe(normal_fit: GAM) -> None:
     fig = normal_fit.plot_residuals(kind="anscombe")
     assert len(fig.axes) == 2
+
+
+def test_plot_residuals_vs_predictor_smoke(normal_fit: GAM) -> None:
+    rng = np.random.default_rng(0)
+    predictor = rng.normal(size=normal_fit._num_obs)
+    fig = normal_fit.plot_residuals_vs_predictor(predictor, name="x")
+    assert len(fig.axes) == 1
+    ax = fig.axes[0]
+    assert ax.get_title() == "Residuals vs x"
+    assert ax.get_xlabel() == "x"
+
+
+def test_plot_residuals_vs_predictor_default_label(normal_fit: GAM) -> None:
+    predictor = np.linspace(0.0, 1.0, normal_fit._num_obs)
+    fig = normal_fit.plot_residuals_vs_predictor(predictor)
+    ax = fig.axes[0]
+    # No name supplied -> generic label.
+    assert ax.get_xlabel() == "predictor"
+    assert ax.get_title() == "Residuals vs predictor"
+
+
+def test_plot_residuals_vs_predictor_categorical(normal_fit: GAM) -> None:
+    rng = np.random.default_rng(0)
+    predictor = rng.choice(np.array(["a", "b", "c"]), size=normal_fit._num_obs)
+    fig = normal_fit.plot_residuals_vs_predictor(predictor, name="group")
+    # matplotlib auto-creates a categorical x-axis; just smoke-test that
+    # the figure exists and the title carries the name.
+    assert fig.axes[0].get_title() == "Residuals vs group"
+
+
+def test_plot_residuals_vs_predictor_shape_mismatch_raises(normal_fit: GAM) -> None:
+    bad = np.zeros(normal_fit._num_obs + 1)
+    with pytest.raises(ValueError, match="expected"):
+        normal_fit.plot_residuals_vs_predictor(bad)
+
+
+def test_plot_residuals_vs_predictor_uses_chosen_kind(normal_fit: GAM) -> None:
+    predictor = np.arange(normal_fit._num_obs, dtype=float)
+    fig = normal_fit.plot_residuals_vs_predictor(predictor, kind="pearson")
+    assert fig.axes[0].get_ylabel() == "Pearson residual"
