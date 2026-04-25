@@ -31,6 +31,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import scipy.linalg as linalg
+import scipy.optimize as optimize
 import scipy.special as special
 import scipy.stats as stats
 
@@ -183,42 +184,48 @@ def _plot_convergence(
 def _gamma_dispersion(dof: float, dev: float, num_obs: int) -> float:
     """Gamma dispersion.
 
-    This function estimates the dispersion of a Gamma family with p
-    degrees of freedom and deviance D, and n observations. The
-    dispersion nu is that number satisfying
-      2*n * (log nu - psi(nu)) - p / nu = D
+    Solves the gamma likelihood equation
+        2 * num_obs * (log nu - psi(nu)) - dof / nu = dev
+    for nu. The left-hand side minus the right-hand side is monotonically
+    decreasing in nu and crosses zero exactly once for valid inputs
+    (``dev > 0`` and ``2 * num_obs > dof``), so Brent's method on a wide
+    bracket converges reliably.
 
-    We use Newton's method with a learning rate to solve this nonlinear
-    equation.
+    The previous damped-Newton implementation used a fixed step of 0.1
+    and tol=1e-6 and ran out of iterations on perfectly reasonable
+    inputs (e.g. ``dof=3, dev=10, num_obs=50``).
 
     Parameters
     ----------
-     dof : float
-         Degrees of freedom
-     dev : float
-         Deviance
-     num_obs : int
-         Number of observations
+    dof : float
+        Effective degrees of freedom of the fitted model.
+    dev : float
+        Total deviance.
+    num_obs : int
+        Number of observations.
 
     Returns
     -------
-     nu : float
-         Estimated dispersion
-    """
-    beta = 0.1
-    tol = 1e-6
-    max_its = 100
+    nu : float
+        The shape-parameter MLE. (The function name is a misnomer kept
+        for backwards compatibility -- callers expect the shape, which
+        is the inverse of the dispersion phi.)
 
-    nu = 1.
-    for i in range(max_its):
-        num = 2. * num_obs * (np.log(nu) - special.psi(nu)) - dof / nu - dev
-        denom = 2. * num_obs * (1. / nu - special.polygamma(1, nu)) + dof / (nu * nu)
-        dnu = num / denom
-        nu -= dnu * beta
-        if abs(dnu) < tol:
-            return nu
-    else:
-        raise ValueError('Could not estimate gamma dispersion.')
+    Raises
+    ------
+    ValueError
+        When the equation has no positive root for the given inputs.
+    """
+    if dev <= 0.0:
+        raise ValueError("Could not estimate gamma dispersion: non-positive deviance.")
+
+    def f(nu: float) -> float:
+        return 2.0 * num_obs * (np.log(nu) - special.psi(nu)) - dof / nu - dev
+
+    lo, hi = 1e-8, 1e8
+    if f(lo) * f(hi) > 0:
+        raise ValueError("Could not estimate gamma dispersion: no sign change in bracket.")
+    return float(optimize.brentq(f, lo, hi, xtol=1e-10, rtol=1e-10))
 
 class GAM:
     def __init__(
