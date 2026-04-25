@@ -54,7 +54,8 @@ class _CategoricalFeature(_Feature):
             Name for feature, used to make plots.
         regularization : dict
             Description of regularization terms (``l1``, ``l2``,
-            ``network_lasso``). See the package README for details.
+            ``group_lasso``, ``network_lasso``). See the package
+            README for details.
         load_from_file : str
             Pickle path used to restore parameters. If specified,
             other parameters are ignored.
@@ -75,10 +76,12 @@ class _CategoricalFeature(_Feature):
         self._has_l1 = False
         self._has_l2 = False
         self._has_network_lasso = False
+        self._has_group_lasso = False
         self._has_prior = False
         self._coef1: float | dict[Any, float] = 0.0
         self._coef2: float | dict[Any, float] = 0.0
         self._lambda_network_lasso: float = 0.0
+        self._lambda_group_lasso: float = 0.0
         self._num_edges: int = 0
         if regularization is not None:
             if "l1" in regularization:
@@ -115,6 +118,15 @@ class _CategoricalFeature(_Feature):
                 else:
                     raise ValueError(
                         "Edges not specified for Network Lasso regularization term."
+                    )
+
+            if "group_lasso" in regularization:
+                self._has_group_lasso = True
+                if "coef" in regularization["group_lasso"]:
+                    self._lambda_group_lasso = float(regularization["group_lasso"]["coef"])
+                else:
+                    raise ValueError(
+                        "No coefficient specified for group_lasso regularization term."
                     )
 
             if (self._has_l1 or self._has_l2) and "prior" in regularization:
@@ -173,6 +185,9 @@ class _CategoricalFeature(_Feature):
         self._lambda2 = np.zeros(self._num_categories)
         if self._has_l2:
             self._lambda2 = self._compute_lambda(self._coef2, smoothing)
+
+        if self._has_group_lasso:
+            self._lambda_group_lasso *= smoothing
 
         if (self._has_l1 or self._has_l2) and self._has_prior:
             prior_vec = np.zeros(self._num_categories)
@@ -235,6 +250,7 @@ class _CategoricalFeature(_Feature):
             "has_l1": self._has_l1,
             "has_l2": self._has_l2,
             "has_network_lasso": self._has_network_lasso,
+            "has_group_lasso": self._has_group_lasso,
             "has_prior": self._has_prior,
             "na_index": self._na_index,
             "x": self.x,
@@ -257,6 +273,8 @@ class _CategoricalFeature(_Feature):
             mv["num_edges"] = self._num_edges
             mv["D"] = self._D
             mv["lambda_network_lasso"] = self._lambda_network_lasso
+        if self._has_group_lasso:
+            mv["lambda_group_lasso"] = self._lambda_group_lasso
         if self._has_prior:
             mv["prior"] = self._prior
 
@@ -286,6 +304,12 @@ class _CategoricalFeature(_Feature):
             self._num_edges = mv["num_edges"]
             self._D = mv["D"]
             self._lambda_network_lasso = mv["lambda_network_lasso"]
+        # has_group_lasso was added later; default to False for older pickles.
+        self._has_group_lasso = mv.get("has_group_lasso", False)
+        if self._has_group_lasso:
+            self._lambda_group_lasso = mv["lambda_group_lasso"]
+        else:
+            self._lambda_group_lasso = 0.0
         self._has_prior = mv["has_prior"]
         if self._has_prior:
             self._prior = mv["prior"]
@@ -360,6 +384,19 @@ class _CategoricalFeature(_Feature):
                 s + D @ q >= 0,
                 s - D @ q >= 0,
             ]
+
+        if self._has_group_lasso:
+            # Group lasso on the per-feature contribution vector
+            # f_j = A q in R^n (one entry per observation). Its L2
+            # norm equals sqrt(q^T diag(ccs) q) since A is the
+            # category-indicator matrix; that's the same as the
+            # L2 norm of (sqrt(ccs) elementwise * q). Driving this
+            # to zero zeros out the entire feature, giving
+            # categorical-variable selection.
+            sqrt_ccs = cvx.Constant(np.sqrt(self._ccs))
+            obj = obj + (2.0 / rho) * self._lambda_group_lasso * cvx.norm(
+                cvx.multiply(sqrt_ccs, q), 2
+            )
 
         prob = cvx.Problem(cvx.Minimize(obj), constraints)
         prob.solve(verbose=self._verbose, solver=self._solver)

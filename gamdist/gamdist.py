@@ -65,7 +65,9 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Confidence intervals on mu, predictions (probably need to use Bootstrap but can
 #   do so intelligently)
 # - Confidence intervals on model parameters, p-values
-# - Group lasso penalty (l2 norm -- not squared -- or l_\infty norm on f_j(x_j; p_j))
+# - Group lasso penalty for linear and spline features (l2 norm on
+#   f_j(x_j; p_j); categorical is done -- see regularization={"group_lasso": ...})
+# - Group lasso variant with l_\infty norm on f_j(x_j; p_j)
 # - Interactions
 # - Runtime optimization (Cython)
 #
