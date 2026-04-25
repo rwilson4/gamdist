@@ -453,7 +453,6 @@ class GAM:
             else:
                 raise ValueError('Invalid feature type')
 
-        # self._rho = mv['rho']
         self._num_obs = mv['num_obs']
         self._y = mv['y']
         self._weights = mv['weights']
@@ -1489,7 +1488,6 @@ class GAM:
                      that of the fitted model, times twice the
                      dispersion.
            AIC:      Akaike Information Criterion.
-           AICc:     AIC with correction for finite data sets.
            UBRE:     Unbiased Risk Estimator (if dispersion is known).
            GCV:      Generalized Cross Validation (if dispersion is estimated).
 
