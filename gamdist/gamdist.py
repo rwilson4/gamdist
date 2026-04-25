@@ -68,7 +68,6 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Runtime optimization (Cython)
 # - Fit in parallel
 # - Residuals
-#   - Anscombe residuals
 #   - Plot residuals against each predictor / unused predictors
 #
 # Done:
@@ -76,7 +75,8 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Plot splines
 # - Deviance (on training set and test set), AIC, AICc, BIC, R^2,
 #   Dispersion, GCV, UBRE
-# - Pearson / deviance / response residuals; residual-vs-fitted and QQ plots
+# - Response, Pearson, deviance, Anscombe residuals;
+#   residual-vs-fitted and QQ plots
 # - Write documentation
 # - Check implementation of Gamma dispersion
 # - Implement probit, complementary log-log links.
@@ -1000,13 +1000,13 @@ class GAM:
 
     def residuals(
         self,
-        kind: Literal["response", "pearson", "deviance"] = "deviance",
+        kind: Literal["response", "pearson", "deviance", "anscombe"] = "deviance",
     ) -> FloatArray:
         """Residuals for the fitted model.
 
         Parameters
         ----------
-        kind : ``"response"``, ``"pearson"``, or ``"deviance"``
+        kind : ``"response"``, ``"pearson"``, ``"deviance"``, or ``"anscombe"``
             ``"response"`` returns ``y - mu`` (raw error).
             ``"pearson"`` returns the standardized residual
             ``(y - E[y]) / sqrt(Var(y))`` using the family's variance
@@ -1016,6 +1016,12 @@ class GAM:
             ``d_i >= 0`` is the per-observation deviance contribution;
             squaring and summing gives the total deviance (Wood 2017
             Sec 3.1.7).
+            ``"anscombe"`` returns the family-specific transformation
+            ``(A(y) - A(mu)) / (V(mu)^(1/6) * sqrt(phi))`` with
+            ``A(t) = integral V(s)^(-1/3) ds``, chosen so the residual
+            is approximately standard-normal under correct
+            specification (McCullagh & Nelder 1989 Sec 2.4.1; Wood
+            2017 Sec 3.1.7).
 
         Returns
         -------
@@ -1040,6 +1046,8 @@ class GAM:
             if self._family == "binomial":
                 return np.asarray(np.sign(y - m * mu) * np.sqrt(d_i), dtype=float)
             return np.asarray(np.sign(y - mu) * np.sqrt(d_i), dtype=float)
+        if kind == "anscombe":
+            return self._anscombe_residuals(y, mu, m)
         raise ValueError(f"Unknown residual kind: {kind!r}")
 
     def _pearson_residuals(
@@ -1107,9 +1115,63 @@ class GAM:
             return np.asarray((y - mu) ** 2 / (mu * mu * y), dtype=float)
         raise ValueError(f"Unsupported family {self._family!r}")
 
+    def _anscombe_residuals(
+        self,
+        y: npt.NDArray[Any],
+        mu: npt.NDArray[Any],
+        m: npt.NDArray[Any] | float,
+    ) -> FloatArray:
+        r"""Anscombe residuals using the family-specific variance-stabilizing
+        transformation ``A(t) = \int V(s)^{-1/3} ds``.
+
+        The residual is
+
+            r_A = (A(y) - A(mu)) / (V(mu)^(1/6) * sqrt(phi))
+
+        with the binomial form scaled by ``sqrt(m)`` because the
+        per-trial proportion ``y/m`` has variance ``V(mu)/m``. See
+        McCullagh & Nelder (1989) Sec 2.4.1 / Table 2.5.
+        """
+        phi = self.dispersion()
+        if self._family == "normal":
+            # V(mu) = 1, A(t) = t -- coincides with the Pearson residual.
+            return np.asarray((y - mu) / np.sqrt(phi), dtype=float)
+        if self._family == "binomial":
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
+            prop = np.clip(y / m, eps, 1.0 - eps)
+            # A(p) = B(2/3, 2/3) * I(2/3, 2/3, p) where I is the regularized
+            # incomplete beta function.
+            scale = float(special.beta(2.0 / 3.0, 2.0 / 3.0))
+            a_y = scale * special.betainc(2.0 / 3.0, 2.0 / 3.0, prop)
+            a_mu = scale * special.betainc(2.0 / 3.0, 2.0 / 3.0, mu_c)
+            denom = (mu_c * (1.0 - mu_c)) ** (1.0 / 6.0) * np.sqrt(phi)
+            return np.asarray(np.sqrt(m) * (a_y - a_mu) / denom, dtype=float)
+        if self._family == "poisson":
+            # V(mu) = mu, A(t) = (3/2) t^(2/3).
+            return np.asarray(
+                1.5 * (y ** (2.0 / 3.0) - mu ** (2.0 / 3.0))
+                / mu ** (1.0 / 6.0) / np.sqrt(phi),
+                dtype=float,
+            )
+        if self._family == "gamma":
+            # V(mu) = mu^2, A(t) = 3 t^(1/3); V(mu)^(1/6) = mu^(1/3).
+            tiny = np.finfo(float).tiny
+            y_safe = np.where(y > 0, y, tiny)
+            mu_safe = np.where(mu > 0, mu, tiny)
+            return np.asarray(
+                3.0 * (y_safe ** (1.0 / 3.0) - mu_safe ** (1.0 / 3.0))
+                / mu_safe ** (1.0 / 3.0) / np.sqrt(phi),
+                dtype=float,
+            )
+        if self._family == "inverse_gaussian":
+            # V(mu) = mu^3, A(t) = log(t); V(mu)^(1/6) = sqrt(mu).
+            return np.asarray((np.log(y) - np.log(mu)) / np.sqrt(mu * phi), dtype=float)
+        raise ValueError(f"Unsupported family {self._family!r}")
+
     def plot_residuals(
         self,
-        kind: Literal["response", "pearson", "deviance"] = "deviance",
+        kind: Literal["response", "pearson", "deviance", "anscombe"] = "deviance",
     ) -> Any:
         """Plot residuals vs. fitted values and a normal QQ plot.
 
