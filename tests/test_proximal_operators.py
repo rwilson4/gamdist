@@ -79,3 +79,33 @@ def test_binomial_logit_scalar_with_weight() -> None:
     out = po._prox_binomial_logit_scalar([0.0, 1.0, 0.5, 1.0, 2.0])
     assert isinstance(out, float)
     assert np.isfinite(out)
+
+
+def test_binomial_logit_scalar_handles_extreme_v() -> None:
+    # v=50 used to drive Newton into np.exp() overflow on the first
+    # iteration. The hardened version stays finite via expit() and
+    # backtracking.
+    out = po._prox_binomial_logit_scalar([50.0, 0.1, 0.0, 1.0])
+    assert np.isfinite(out)
+
+
+def test_binomial_logit_scalar_matches_brute_force_optimum() -> None:
+    # Spot-check the Newton solution against scipy.optimize.minimize_scalar
+    # on the same objective.
+    v, mu, y, m = 0.7, 1.5, 0.5, 1.0
+
+    def obj(z: float) -> float:
+        return m * float(np.logaddexp(0.0, z)) - y * z + 0.5 * mu * (z - v) ** 2
+
+    from scipy.optimize import minimize_scalar
+
+    expected = float(minimize_scalar(obj).x)
+    out = po._prox_binomial_logit_scalar([v, mu, y, m])
+    assert abs(out - expected) < 1e-3
+
+
+def test_poisson_log_scalar_handles_extreme_v() -> None:
+    # Large positive v previously could cause exp(x) to overflow during
+    # Newton; the cap + damping keeps the result finite.
+    out = po._prox_poisson_log_scalar([20.0, 0.1, 0.0])
+    assert np.isfinite(out)

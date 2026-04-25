@@ -71,6 +71,56 @@ def test_binomial_overdispersion_no_covariate_classes_returns_one() -> None:
     assert mdl._binomial_overdispersion() == 1.0
 
 
+def test_poisson_dispersion_one_without_estimate_flag() -> None:
+    rng = np.random.default_rng(0)
+    n = 200
+    X = pd.DataFrame({"x": rng.normal(size=n)})
+    y = rng.poisson(np.exp(0.4 * X["x"].values + 0.5), size=n).astype(float)
+    mdl = GAM(family="poisson")  # estimate_overdispersion=False (default)
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=30)
+    assert mdl.dispersion() == 1.0
+
+
+def test_poisson_overdispersion_pearson_formula() -> None:
+    # Numeric check: dispersion() should equal sum((y - mu)^2 / mu) / (n - p)
+    # when estimate_overdispersion=True and the data is overdispersed.
+    rng = np.random.default_rng(3)
+    n = 300
+    X = pd.DataFrame({"x": rng.normal(size=n)})
+    # Negative-binomial sampling produces overdispersion vs. pure Poisson:
+    # mean = mu, var = mu + mu^2 / k. Choose k=2 for moderate overdispersion.
+    mu_true = np.exp(0.3 * X["x"].values + 1.0)
+    k = 2.0
+    p_nb = k / (k + mu_true)
+    y = rng.negative_binomial(k, p_nb, size=n).astype(float)
+
+    mdl = GAM(family="poisson", estimate_overdispersion=True)
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=40)
+
+    disp = mdl.dispersion()
+    mu_hat = mdl._eval_inv_link(mdl._num_features * mdl.f_bar)
+    expected = float(np.sum((y - mu_hat) ** 2 / mu_hat) / (n - mdl.dof()))
+    assert disp == pytest.approx(expected)
+    assert disp > 1.0  # We sampled from an overdispersed distribution.
+
+
+def test_poisson_overdispersion_caches_dispersion() -> None:
+    # Calling dispersion() twice must not change the result.
+    rng = np.random.default_rng(0)
+    n = 200
+    X = pd.DataFrame({"x": rng.normal(size=n)})
+    y = rng.poisson(np.exp(0.5 * X["x"].values), size=n).astype(float)
+    mdl = GAM(family="poisson", estimate_overdispersion=True)
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=30)
+    first = mdl.dispersion()
+    second = mdl.dispersion()
+    assert first == second
+    assert mdl._known_dispersion
+
+
 @pytest.mark.parametrize(
     "link,family",
     [

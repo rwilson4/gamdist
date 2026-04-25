@@ -1,3 +1,31 @@
+2026-04-25 : Cleanup follow-ups
+- Categorical predict() now emits a UserWarning naming any categories
+  not seen during fit (effect 0 fallback is unchanged).
+- Harden the Newton iterations in _prox_binomial_logit_scalar and
+  _prox_poisson_log_scalar: switch to scipy.special.expit /
+  np.logaddexp for stability, add a backtracking line search, and
+  fall back to scipy.optimize.minimize_scalar instead of raising
+  ValueError when max_its is exhausted.
+- Add GAM.residuals(kind="response"|"pearson"|"deviance") and
+  GAM.plot_residuals(): a 1x2 figure with residuals-vs-fitted on the
+  left and a normal Q-Q plot on the right.
+- Implement Poisson overdispersion: GAM(family="poisson",
+  estimate_overdispersion=True) now estimates phi via the Pearson
+  chi-square / dof formula. Without the flag the dispersion is still
+  fixed at 1.0.
+
+2026-04-25 : BIC and pseudo-R^2
+- Add GAM.bic() = deviance/dispersion + log(n) * p, matching the
+  parameter-counting convention used by aic()/aicc().
+- Add GAM.null_deviance() (deviance of the intercept-only model) and
+  GAM.r_squared() (deviance-based pseudo-R^2; classical R^2 for the
+  normal+identity case, NaN when null deviance is zero).
+- Refactor GAM.deviance() onto a private _deviance_from_mu(y, mu, m, w)
+  helper so null_deviance() reuses the per-family math.
+- summary() now prints BIC and R^2.
+- Remove "AICc, BIC, R-squared estimate" from the to-do list at the
+  top of gamdist.py.
+
 2026-04-25 : AICc
 - Implement GAM.aicc() using the Hurvich-Tsai small-sample correction
   AICc = AIC + 2p(p+1)/(n-p-1), matching the convention used by aic()

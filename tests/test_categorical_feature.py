@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -36,7 +37,8 @@ def test_predict_unknown_category_returns_zero() -> None:
     feat = _CategoricalFeature(name="g")
     feat.initialize(np.array(["a", "b"]))
     feat.p = np.array([1.5, -2.0])
-    out = feat.predict(np.array(["a", "b", "z"]))
+    with pytest.warns(UserWarning, match="unseen categories"):
+        out = feat.predict(np.array(["a", "b", "z"]))
     assert out[2] == 0.0
 
 
@@ -83,6 +85,34 @@ def test_optimize_satisfies_zero_sum_constraint() -> None:
     feat.optimize(-rng.normal(size=200), rho=1.0)
     weighted = float(feat._ccs.dot(feat.p))
     assert abs(weighted) < 1e-4
+
+
+def test_predict_warns_on_unseen_category() -> None:
+    rng = np.random.default_rng(0)
+    x = rng.choice(np.array(["a", "b", "c"]), size=120)
+    feat = _CategoricalFeature(name="g")
+    feat.initialize(x)
+    feat.optimize(rng.normal(size=120), rho=1.0)
+
+    test_x = np.array(["a", "b", "d", "e"])
+    with pytest.warns(UserWarning, match="unseen categories"):
+        out = feat.predict(test_x)
+    # 'd' and 'e' fall back to effect 0; 'a' and 'b' use fitted values.
+    assert out[2] == 0.0
+    assert out[3] == 0.0
+    assert out[0] == feat.p[feat._category_hash["a"]]
+
+
+def test_predict_no_warning_when_categories_known() -> None:
+    rng = np.random.default_rng(0)
+    x = rng.choice(np.array(["a", "b", "c"]), size=120)
+    feat = _CategoricalFeature(name="g")
+    feat.initialize(x)
+    feat.optimize(rng.normal(size=120), rho=1.0)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning would fail the test
+        feat.predict(np.array(["a", "b"]))
 
 
 def test_save_load_round_trip(tmp_path: Path) -> None:

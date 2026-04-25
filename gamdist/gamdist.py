@@ -58,10 +58,8 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Hierarchical models
 # - Piecewise constant fits, total variation regularization
 # - Monotone constraint
-# - Implement overdispersion for Poisson family
 # - Implement Multinomial, Proportional Hazards
 # - Implement outlier detection
-# - AICc, BIC, R-squared estimate
 # - Confidence intervals on mu, predictions (probably need to use Bootstrap but can
 #   do so intelligently)
 # - Confidence intervals on model parameters, p-values
@@ -70,14 +68,15 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Runtime optimization (Cython)
 # - Fit in parallel
 # - Residuals
-#   - Compute different types of residuals (Sec 3.1.7 of [GAMr])
-#   - Plot residuals against mean response, variance, predictor, unused predictor
-#   - QQ plot of residuals
+#   - Anscombe residuals
+#   - Plot residuals against each predictor / unused predictors
 #
 # Done:
 # - Implement Gaussian, Binomial, Poisson, Gamma, Inv Gaussian,
 # - Plot splines
-# - Deviance (on training set and test set), AIC, Dispersion, GCV, UBRE
+# - Deviance (on training set and test set), AIC, AICc, BIC, R^2,
+#   Dispersion, GCV, UBRE
+# - Pearson / deviance / response residuals; residual-vs-fitted and QQ plots
 # - Write documentation
 # - Check implementation of Gamma dispersion
 # - Implement probit, complementary log-log links.
@@ -85,6 +84,7 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Constrain spline to have mean prediction 0 over the data
 # - Save and load properly
 # - Implement overdispersion for Binomial family
+# - Implement overdispersion for Poisson family
 
 FAMILIES = ['normal',
             'binomial',
@@ -998,6 +998,151 @@ class GAM:
         """
         self._features[name]._plot(true_fn=true_fn)
 
+    def residuals(
+        self,
+        kind: Literal["response", "pearson", "deviance"] = "deviance",
+    ) -> FloatArray:
+        """Residuals for the fitted model.
+
+        Parameters
+        ----------
+        kind : ``"response"``, ``"pearson"``, or ``"deviance"``
+            ``"response"`` returns ``y - mu`` (raw error).
+            ``"pearson"`` returns the standardized residual
+            ``(y - E[y]) / sqrt(Var(y))`` using the family's variance
+            function and the estimated dispersion. For binomial with
+            covariate classes, ``y`` is the count and ``E[y] = m * mu``.
+            ``"deviance"`` returns ``sign(y - E[y]) * sqrt(d_i)``, where
+            ``d_i >= 0`` is the per-observation deviance contribution;
+            squaring and summing gives the total deviance (Wood 2017
+            Sec 3.1.7).
+
+        Returns
+        -------
+        residuals : array of shape (n_obs,)
+        """
+        if not self._fitted:
+            raise AttributeError("Model not yet fit.")
+
+        y = self._y
+        mu = self._eval_inv_link(self._num_features * self.f_bar)
+        if self._has_covariate_classes:
+            m: npt.NDArray[Any] | float = self._covariate_class_sizes
+        else:
+            m = 1.0
+
+        if kind == "response":
+            return np.asarray(y - mu, dtype=float)
+        if kind == "pearson":
+            return self._pearson_residuals(y, mu, m)
+        if kind == "deviance":
+            d_i = self._unit_deviance_for_residuals(y, mu, m)
+            if self._family == "binomial":
+                return np.asarray(np.sign(y - m * mu) * np.sqrt(d_i), dtype=float)
+            return np.asarray(np.sign(y - mu) * np.sqrt(d_i), dtype=float)
+        raise ValueError(f"Unknown residual kind: {kind!r}")
+
+    def _pearson_residuals(
+        self,
+        y: npt.NDArray[Any],
+        mu: npt.NDArray[Any],
+        m: npt.NDArray[Any] | float,
+    ) -> FloatArray:
+        """Pearson residuals for each family."""
+        phi = self.dispersion()
+        if self._family == "binomial":
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
+            var = m * mu_c * (1.0 - mu_c)
+            return np.asarray((y - m * mu_c) / np.sqrt(var * phi), dtype=float)
+        if self._family == "normal":
+            return np.asarray((y - mu) / np.sqrt(phi), dtype=float)
+        if self._family == "poisson":
+            return np.asarray((y - mu) / np.sqrt(mu * phi), dtype=float)
+        if self._family == "gamma":
+            return np.asarray((y - mu) / np.sqrt(mu * mu * phi), dtype=float)
+        if self._family == "inverse_gaussian":
+            return np.asarray((y - mu) / np.sqrt(mu * mu * mu * phi), dtype=float)
+        raise ValueError(f"Unsupported family {self._family!r}")
+
+    def _unit_deviance_for_residuals(
+        self,
+        y: npt.NDArray[Any],
+        mu: npt.NDArray[Any],
+        m: npt.NDArray[Any] | float,
+    ) -> FloatArray:
+        """Per-observation deviance contribution ``d_i >= 0``.
+
+        For binomial this differs from the per-term contribution
+        accumulated by ``deviance()``: the ``deviance()`` form omits
+        the saturated-likelihood constant (which doesn't affect model
+        fitting), but ``d_i`` for residuals must include it so that
+        ``sqrt(d_i)`` is real and non-negative.
+        """
+        if self._family == "normal":
+            return np.asarray((y - mu) ** 2, dtype=float)
+        if self._family == "binomial":
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t1 = np.where(y > 0, y * np.log(y / (m * mu_c)), 0.0)
+                t2 = np.where(
+                    y < m,
+                    (m - y) * np.log((m - y) / (m * (1.0 - mu_c))),
+                    0.0,
+                )
+            return np.maximum(2.0 * (t1 + t2), 0.0)
+        if self._family == "poisson":
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = np.where(y > 0, y * np.log(np.where(y > 0, y, 1.0) / mu), 0.0)
+            return np.maximum(2.0 * (t - (y - mu)), 0.0)
+        if self._family == "gamma":
+            tiny = np.finfo(float).tiny
+            y_safe = np.where(y > 0, y, tiny)
+            mu_safe = np.where(mu > 0, mu, tiny)
+            return np.maximum(
+                2.0 * (-np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe), 0.0
+            )
+        if self._family == "inverse_gaussian":
+            return np.asarray((y - mu) ** 2 / (mu * mu * y), dtype=float)
+        raise ValueError(f"Unsupported family {self._family!r}")
+
+    def plot_residuals(
+        self,
+        kind: Literal["response", "pearson", "deviance"] = "deviance",
+    ) -> Any:
+        """Plot residuals vs. fitted values and a normal QQ plot.
+
+        Produces a 1x2 matplotlib figure: residual-vs-fitted on the
+        left, Q-Q plot against the standard normal on the right.
+
+        Parameters
+        ----------
+        kind : ``"response"``, ``"pearson"``, or ``"deviance"``
+            Forwarded to ``residuals()``.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+        """
+        import matplotlib.pyplot as plt
+
+        res = self.residuals(kind)
+        mu = self._eval_inv_link(self._num_features * self.f_bar)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+        ax1.scatter(mu, res, s=10, alpha=0.6)
+        ax1.axhline(0.0, color="grey", linewidth=0.5)
+        ax1.set_xlabel("Fitted (mu)")
+        ax1.set_ylabel(f"{kind.capitalize()} residual")
+        ax1.set_title("Residuals vs Fitted")
+
+        stats.probplot(res, plot=ax2)
+        ax2.set_title("Normal Q-Q")
+
+        fig.tight_layout()
+        return fig
+
     def deviance(
         self,
         X: pd.DataFrame | None = None,
@@ -1057,6 +1202,16 @@ class GAM:
             else:
                 m = 1.0
 
+        return self._deviance_from_mu(y, mu, m=m, w=w)
+
+    def _deviance_from_mu(
+        self,
+        y: npt.NDArray[Any],
+        mu: npt.NDArray[Any],
+        m: npt.NDArray[Any] | float = 1.0,
+        w: npt.NDArray[Any] | None = None,
+    ) -> float:
+        """Compute deviance for given response, mean, optional class sizes and weights."""
         if self._family == "normal":
             y_minus_mu = y - mu
             if w is None:
@@ -1141,6 +1296,10 @@ class GAM:
                 return float(self._binomial_overdispersion())
             return 1.0
         if self._family == "poisson":
+            if self._known_dispersion:
+                return float(self._dispersion)
+            if self._estimate_overdispersion:
+                return float(self._poisson_overdispersion())
             return 1.0
         if self._family == "gamma":
             if self._known_dispersion:
@@ -1409,6 +1568,34 @@ class GAM:
             self._dispersion = s2
             return s2
 
+    def _poisson_overdispersion(self) -> float:
+        r"""Estimate the Poisson dispersion as the Pearson chi-square / dof.
+
+        Under the standard Poisson model ``Var(Y) = mu``; if observed
+        variance is larger (overdispersion) the dispersion ``phi`` is
+        estimated as
+
+            phi = sum_i (y_i - mu_i)^2 / mu_i  /  (n - p)
+
+        where ``p = dof()``. This is the Pearson form of Eqn 3.10 in
+        Wood (2017). The replication-based estimator used for
+        ``_binomial_overdispersion`` is binomial-specific (it relies on
+        covariate-class replicates) and is not applicable here.
+
+        The result is cached on ``self._dispersion`` and
+        ``self._known_dispersion`` so subsequent calls are O(1).
+        """
+        mu = self._eval_inv_link(self._num_features * self.f_bar)
+        # Guard against transient mu <= 0 from a non-canonical link.
+        tiny = np.finfo(float).tiny
+        mu_safe = np.where(mu > 0, mu, tiny)
+        res = self._y - mu
+        n_minus_p = self._num_obs - self.dof()
+        s2 = float(np.sum(res * res / mu_safe) / n_minus_p)
+        self._known_dispersion = True
+        self._dispersion = s2
+        return s2
+
     def dof(self) -> float:
         """Degrees of freedom: sum of feature DOFs plus the affine intercept."""
         dof = 1.0  # Affine factor
@@ -1467,6 +1654,55 @@ class GAM:
             return float("inf")
         return self.aic() + 2.0 * p * (p + 1) / (n - p - 1)
 
+    def bic(self) -> float:
+        """Bayesian Information Criterion.
+
+        Computed as
+
+            BIC = deviance / dispersion + log(n) * p
+
+        where ``p`` is the effective parameter count (``dof()``, plus
+        one when dispersion is estimated, matching ``aic()`` and
+        ``aicc()``) and ``n`` is the number of observations. As with
+        ``aic()``, the BIC is off by the same constant factor; only
+        differences are meaningful for model selection.
+        """
+        p = self.dof()
+        if not self._known_dispersion:
+            p += 1
+        return self.deviance() / self.dispersion() + float(np.log(self._num_obs)) * p
+
+    def null_deviance(self) -> float:
+        """Deviance of the intercept-only model on the training data.
+
+        The null model predicts the same mean response for every
+        observation: ``mean(y)`` (or ``sum(y) / sum(covariate_class_sizes)``
+        when binomial covariate classes were supplied at fit time).
+        """
+        y = self._y
+        if self._has_covariate_classes:
+            m: npt.NDArray[Any] | float = self._covariate_class_sizes
+            mean_response = float(np.sum(y)) / float(np.sum(m))
+        else:
+            m = 1.0
+            mean_response = float(np.mean(y))
+        mu = np.full_like(y, mean_response, dtype=float)
+        return self._deviance_from_mu(y, mu, m=m, w=self._weights)
+
+    def r_squared(self) -> float:
+        """Deviance-based pseudo-R^2.
+
+        Returns ``1 - deviance() / null_deviance()``. For a normal
+        family with identity link this is the conventional R^2; for
+        other families it is the deviance pseudo-R^2 of McCullagh and
+        Nelder. Returns ``nan`` when the null deviance is zero (the
+        response is constant), where pseudo-R^2 is undefined.
+        """
+        null_dev = self.null_deviance()
+        if null_dev == 0.0:
+            return float("nan")
+        return 1.0 - self.deviance() / null_dev
+
     def ubre(self, gamma: float = 1.0) -> float:
         """Un-Biased Risk Estimator
 
@@ -1513,15 +1749,15 @@ class GAM:
                      dispersion.
            AIC:      Akaike Information Criterion.
            AICc:     AIC with correction for finite data sets.
+           BIC:      Bayesian Information Criterion.
+           R^2:      Deviance-based pseudo-R^2.
            UBRE:     Unbiased Risk Estimator (if dispersion is known).
            GCV:      Generalized Cross Validation (if dispersion is estimated).
 
         For more details on these parameters, see the documentation
-        in the corresponding functions. It may also be helpful to
-        include an R^2 value where appropriate, and perhaps a p-value
-        for the model against the null model having just the affine
-        term. It would also be nice to have confidence intervals
-        at least on the estimated dispersion parameter.
+        in the corresponding functions. It would also be nice to have
+        confidence intervals at least on the estimated dispersion
+        parameter.
         """
 
         print("Model Statistics")
@@ -1532,6 +1768,8 @@ class GAM:
         print(f"Deviance: {self.deviance():0.06g}")
         print(f"AIC: {self.aic():0.06g}")
         print(f"AICc: {self.aicc():0.06g}")
+        print(f"BIC: {self.bic():0.06g}")
+        print(f"R^2: {self.r_squared():0.06g}")
 
         if self._known_dispersion:
             print(f"UBRE: {self.ubre():0.06g}")
