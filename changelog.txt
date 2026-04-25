@@ -1,3 +1,35 @@
+2026-04-25 : Modernization (v0.2.0)
+- Drop Python 2 support; require Python 3.11 or newer.
+- Switch packaging from setup.py to pyproject.toml with the hatchling
+  backend; manage development environments with uv.
+- Add PEP 484 type hints across the public GAM API and the feature
+  classes; promote _Feature to abc.ABC with abstractmethod stubs.
+- Add a pytest test suite (96 tests, 84% line coverage) covering the
+  proximal operators, feature classes, GAM API, save/load round-trip,
+  link round-trip, and end-to-end regression varieties.
+- Bug fixes:
+    * deviance(X, y, covariate_class_sizes=ccs) used m=1 when ccs was
+      provided (inverted condition); now uses ccs as intended.
+    * Define SplineError so the existing raise sites in spline_feature
+      no longer NameError when triggered.
+    * confidence_intervals() and aicc() now raise NotImplementedError
+      instead of silently returning None.
+    * Pickle files are now opened in binary mode ('wb'/'rb') so save
+      and load work on Python 3.
+    * Iteration order over features is deterministic (sorted) wherever
+      it affects covariate-class indexing.
+    * Logistic link uses scipy.special.expit / logit to avoid exp()
+      overflow on extreme linear predictors.
+    * Binomial / Poisson / gamma deviance handle boundary mu and y
+      values without spurious RuntimeWarnings.
+- Default cvxpy solver for categorical features is CLARABEL (ECOS is
+  no longer bundled with cvxpy >= 1.4).
+- Removed: the unreachable multiprocessing branch in fit() and the
+  associated _feature_wrapper helper. Parallel feature optimization
+  remains a documented to-do item.
+- Pickle compatibility: model files saved with v0.1 (Python 2) cannot
+  be loaded by v0.2; refit and re-save.
+
 2017-12-30 : Overdispersion
 - Implemented over- (or under-) dispersion for binomial families.
 
