@@ -101,3 +101,79 @@ def test_plot_residuals_returns_figure(normal_fit: GAM) -> None:
     titles = {ax.get_title() for ax in fig.axes}
     assert "Residuals vs Fitted" in titles
     assert "Normal Q-Q" in titles
+
+
+def test_anscombe_normal_equals_pearson(normal_fit: GAM) -> None:
+    # For normal family V(mu)=1 and A(t)=t, so Anscombe collapses to
+    # the Pearson residual.
+    np.testing.assert_allclose(
+        normal_fit.residuals("anscombe"),
+        normal_fit.residuals("pearson"),
+        atol=1e-12,
+    )
+
+
+def test_anscombe_poisson_matches_formula() -> None:
+    rng = np.random.default_rng(7)
+    n = 200
+    X = pd.DataFrame({"x": rng.normal(size=n)})
+    y = rng.poisson(np.exp(0.4 * X["x"].values + 0.5), size=n).astype(float)
+    mdl = GAM(family="poisson")
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=30)
+
+    mu = mdl._eval_inv_link(mdl._num_features * mdl.f_bar)
+    expected = 1.5 * (y ** (2 / 3) - mu ** (2 / 3)) / mu ** (1 / 6) / np.sqrt(
+        mdl.dispersion()
+    )
+    np.testing.assert_allclose(mdl.residuals("anscombe"), expected, rtol=1e-10)
+
+
+def test_anscombe_gamma_matches_formula() -> None:
+    # Use known dispersion to skip the (numerically finicky)
+    # _gamma_dispersion Newton estimator for the test.
+    rng = np.random.default_rng(0)
+    n = 100
+    X = pd.DataFrame({"x": rng.uniform(0.1, 0.5, size=n)})
+    y = rng.gamma(shape=4.0, scale=0.5, size=n)
+    mdl = GAM(family="gamma", dispersion=1.0)
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=30)
+
+    mu = mdl._eval_inv_link(mdl._num_features * mdl.f_bar)
+    expected = 3.0 * (y ** (1 / 3) - mu ** (1 / 3)) / mu ** (1 / 3)
+    np.testing.assert_allclose(mdl.residuals("anscombe"), expected, rtol=1e-10)
+
+
+def test_anscombe_binomial_with_ccs_finite() -> None:
+    rng = np.random.default_rng(2)
+    n = 50
+    X = pd.DataFrame({"x": rng.normal(size=n)})
+    ccs = np.full(n, 10.0)
+    p = 1.0 / (1.0 + np.exp(-X["x"].values))
+    y = rng.binomial(10, p).astype(float)
+    mdl = GAM(family="binomial")
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, covariate_class_sizes=ccs, max_its=30)
+    r = mdl.residuals("anscombe")
+    assert r.shape == (n,)
+    assert np.all(np.isfinite(r))
+
+
+def test_anscombe_inverse_gaussian_matches_formula() -> None:
+    rng = np.random.default_rng(0)
+    n = 200
+    X = pd.DataFrame({"x": rng.uniform(0.1, 1.0, size=n)})
+    y = rng.uniform(0.5, 1.5, size=n)
+    mdl = GAM(family="inverse_gaussian")
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=20)
+
+    mu = mdl._eval_inv_link(mdl._num_features * mdl.f_bar)
+    expected = (np.log(y) - np.log(mu)) / np.sqrt(mu * mdl.dispersion())
+    np.testing.assert_allclose(mdl.residuals("anscombe"), expected, rtol=1e-10)
+
+
+def test_plot_residuals_accepts_anscombe(normal_fit: GAM) -> None:
+    fig = normal_fit.plot_residuals(kind="anscombe")
+    assert len(fig.axes) == 2
