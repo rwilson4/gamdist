@@ -1,3 +1,11 @@
+2026-04-25 : Residuals vs predictor plots
+- Add GAM.plot_residuals_vs_predictor(predictor, kind=..., name=...).
+  Scatter of residuals against an arbitrary 1-D array of length
+  num_obs. Useful for diagnosing unmodeled non-linearities (a
+  predictor already in the model) or assessing whether to add a new
+  predictor (one not currently in the model). Categorical
+  (string/object) predictors get an automatic categorical x-axis.
+
 2026-04-25 : Fix _gamma_dispersion convergence
 - Replace the damped-Newton solver in _gamma_dispersion (fixed step
   beta=0.1, max_its=100, tol=1e-6) with scipy.optimize.brentq on a
