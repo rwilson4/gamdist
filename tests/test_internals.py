@@ -8,19 +8,46 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.special as special
 
 from gamdist import GAM
 from gamdist.gamdist import _gamma_dispersion, _plot_convergence
 from tests.conftest import generate_covariate_class_data
 
 
-def test_gamma_dispersion_diverges_raises() -> None:
-    # The Newton iteration in _gamma_dispersion uses a fixed beta=0.1 step
-    # and tol=1e-6, which often fails to converge in 100 iterations. We
-    # exercise the explicit failure path here; the success path is touched
-    # implicitly by GAM.dispersion() in the gamma family tests.
+def test_gamma_dispersion_solves_likelihood_equation() -> None:
+    # Inputs that the previous damped-Newton implementation could not
+    # solve in 100 iterations. The brentq-based solver returns the unique
+    # root of f(nu) = 2*n*(log nu - psi(nu)) - dof/nu - dev.
+    nu = _gamma_dispersion(dof=3.0, dev=10.0, num_obs=50)
+    assert nu > 0
+    f_at_nu = (
+        2.0 * 50 * (np.log(nu) - special.psi(nu)) - 3.0 / nu - 10.0
+    )
+    assert abs(f_at_nu) < 1e-6
+
+
+def test_gamma_dispersion_zero_deviance_raises() -> None:
+    # With dev=0 the likelihood equation has no positive root (the LHS is
+    # strictly positive for all finite nu).
     with pytest.raises(ValueError, match="Could not estimate gamma dispersion"):
-        _gamma_dispersion(dof=3.0, dev=10.0, num_obs=50)
+        _gamma_dispersion(dof=3.0, dev=0.0, num_obs=50)
+
+
+def test_gamma_dispersion_via_gam_succeeds() -> None:
+    # End-to-end: fitting a gamma model and calling .dispersion() must
+    # now succeed. The previous implementation raised ValueError on this
+    # exact data.
+    rng = np.random.default_rng(0)
+    n = 100
+    X = pd.DataFrame({"x": rng.uniform(0.1, 0.5, size=n)})
+    y = rng.gamma(shape=4.0, scale=0.5, size=n)
+    mdl = GAM(family="gamma")
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=30)
+    phi = mdl.dispersion()
+    assert np.isfinite(phi)
+    assert phi > 0
 
 
 def test_plot_convergence_uses_agg_backend() -> None:

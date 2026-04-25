@@ -1,3 +1,17 @@
+2026-04-25 : Fix _gamma_dispersion convergence
+- Replace the damped-Newton solver in _gamma_dispersion (fixed step
+  beta=0.1, max_its=100, tol=1e-6) with scipy.optimize.brentq on a
+  wide bracket. The likelihood equation
+      2 * num_obs * (log nu - psi(nu)) - dof / nu = dev
+  is monotonic in nu and has a unique positive root for any inputs
+  with dev > 0 and 2 * num_obs > dof, so a bracket-based root
+  finder converges reliably. The previous Newton iteration ran out
+  of iterations on perfectly reasonable inputs (e.g. dof=3, dev=10,
+  num_obs=50), causing GAM(family="gamma").dispersion() to spuriously
+  raise ValueError after fitting.
+- The function now raises ValueError only when the equation has no
+  positive root (e.g. dev <= 0).
+
 2026-04-25 : Anscombe residuals
 - Add kind="anscombe" to GAM.residuals() (and GAM.plot_residuals()).
   Implements the family-specific variance-stabilizing transformation
