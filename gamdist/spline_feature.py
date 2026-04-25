@@ -92,13 +92,13 @@ def _evaluate_spline_basis(X: float, xi: FloatArray) -> FloatArray:
     d = np.zeros(K - 1)
     last_xi = xi[K - 1]
     for k in range(K - 1):
-        if X > xi[k]:
+        if xi[k] < X:
             term1 = X - xi[k]
             d[k] = term1 * term1 * term1
         else:
             continue
 
-        if X > last_xi:
+        if last_xi < X:
             term2 = X - last_xi
             d[k] -= term2 * term2 * term2
 
@@ -361,7 +361,7 @@ class _SplineFeature(_Feature):
 
     def num_params(self) -> int:
         """Number of parameters in this feature."""
-        return int(len(self._theta))
+        return len(self._theta)
 
     def dof(self) -> float:
         """Effective degrees of freedom contributed by this feature."""

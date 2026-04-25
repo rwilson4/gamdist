@@ -120,10 +120,11 @@ def _prox_binomial_logit(
 ) -> FloatArray:
     m = np.ones(y.shape) if ccs is None else ccs
     mu_arr = np.full(v.shape, mu)
+    items: list[Sequence[float]]
     if w is None:
-        items = list(zip(v, mu_arr, y, m, strict=True))
+        items = [tuple(t) for t in zip(v, mu_arr, y, m, strict=True)]
     else:
-        items = list(zip(v, mu_arr, y, m, w, strict=True))
+        items = [tuple(t) for t in zip(v, mu_arr, y, m, w, strict=True)]
     return np.array([_prox_binomial_logit_scalar(item) for item in items])
 
 
@@ -204,10 +205,11 @@ def _prox_poisson_log(
     p: Any = None,
 ) -> FloatArray:
     mu_arr = np.full(v.shape, mu)
+    items: list[Sequence[float]]
     if w is None:
-        items = list(zip(v, mu_arr, y, strict=True))
+        items = [tuple(t) for t in zip(v, mu_arr, y, strict=True)]
     else:
-        items = list(zip(v, mu_arr, y, w, strict=True))
+        items = [tuple(t) for t in zip(v, mu_arr, y, w, strict=True)]
     return np.array([_prox_poisson_log_scalar(item) for item in items])
 
 
@@ -328,10 +330,11 @@ def _prox_inv_gaussian_reciprocal_squared(
     p: Any = None,
 ) -> FloatArray:
     mu_arr = np.full(v.shape, mu)
+    items: list[Sequence[float]]
     if w is None:
-        items = list(zip(v, mu_arr, y, strict=True))
+        items = [tuple(t) for t in zip(v, mu_arr, y, strict=True)]
     else:
-        items = list(zip(v, mu_arr, y, w, strict=True))
+        items = [tuple(t) for t in zip(v, mu_arr, y, w, strict=True)]
     return np.array([_prox_inv_gaussian_reciprocal_squared_scalar(item) for item in items])
 
 

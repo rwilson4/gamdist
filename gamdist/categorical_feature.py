@@ -69,7 +69,7 @@ class _CategoricalFeature(_Feature):
         super().__init__(name)
 
         self._use_cvx = True
-        self._solver = "ECOS"
+        self._solver = "CLARABEL"
         self._categories: list[Any] = []
         self._has_l1 = False
         self._has_l2 = False
@@ -406,7 +406,7 @@ class _CategoricalFeature(_Feature):
 
     def num_params(self) -> int:
         """Number of parameters in this feature."""
-        return int(len(self.p))
+        return len(self.p)
 
     def category_index(self, observation: int) -> tuple[int, int]:
         """Return ``(category_index, num_categories)`` for the given training-row index."""

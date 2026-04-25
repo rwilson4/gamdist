@@ -325,7 +325,7 @@ class GAM:
         if family is None:
             raise ValueError('Family not specified.')
         elif family not in FAMILIES:
-            raise ValueError('{} family not supported'.format(family))
+            raise ValueError(f'{family} family not supported')
         elif family == 'exponential':
             # Exponential is a special case of Gamma with a dispersion of 1.
             self._family = 'gamma'
@@ -334,16 +334,16 @@ class GAM:
             self._family = family
 
         if link is None:
-            self._link = CANONICAL_LINKS[family]
+            self._link = CANONICAL_LINKS[self._family]
         elif link in LINKS:
             self._link = link
         else:
-            raise ValueError('{} link not supported'.format(link))
+            raise ValueError(f'{link} link not supported')
 
         if dispersion is not None:
             self._known_dispersion = True
             self._dispersion = dispersion
-        elif (self._family in FAMILIES_WITH_KNOWN_DISPERSIONS.keys()
+        elif (self._family in FAMILIES_WITH_KNOWN_DISPERSIONS
               and not estimate_overdispersion):
             self._known_dispersion = True
             self._dispersion = FAMILIES_WITH_KNOWN_DISPERSIONS[self._family]
@@ -354,8 +354,8 @@ class GAM:
             self._eval_link = lambda x: x
             self._eval_inv_link = lambda x: x
         elif self._link == 'logistic':
-            self._eval_link = lambda x: np.log( x / (1. - x) )
-            self._eval_inv_link = lambda x: np.exp(x) / (1 + np.exp(x))
+            self._eval_link = lambda x: special.logit(x)
+            self._eval_inv_link = lambda x: special.expit(x)
         elif self._link == 'probit':
             # Inverse CDF of the Gaussian distribution
             self._eval_link = lambda x: stats.norm.ppf(x)
@@ -374,7 +374,7 @@ class GAM:
             self._eval_inv_link = lambda x: 1. / np.sqrt(x)
 
         self._estimate_overdispersion = estimate_overdispersion
-        self._features = {}
+        self._features: dict[str, _Feature] = {}
         self._offset = 0.0
         self._num_features = 0
         self._fitted = False
@@ -474,8 +474,8 @@ class GAM:
             self._eval_link = lambda x: x
             self._eval_inv_link = lambda x: x
         elif self._link == 'logistic':
-            self._eval_link = lambda x: np.log( x / (1. - x) )
-            self._eval_inv_link = lambda x: np.exp(x) / (1 + np.exp(x))
+            self._eval_link = lambda x: special.logit(x)
+            self._eval_inv_link = lambda x: special.expit(x)
         elif self._link == 'probit':
             # Inverse CDF of the Gaussian distribution
             self._eval_link = lambda x: stats.norm.ppf(x)
@@ -702,7 +702,7 @@ class GAM:
 
         for name, feature in self._features.items():
             feature.initialize(
-                X[name].values,
+                np.asarray(X[name].values),
                 smoothing=smoothing,
                 covariate_class_sizes=self._covariate_class_sizes,
                 save_flag=save_flag,
@@ -803,7 +803,7 @@ class GAM:
                               self.dual_tol, self.dev)
 
     def _optimize(self, upf: FloatArray, N: int) -> FloatArray:
-        """Optimize \bar{z}.
+        r"""Optimize \bar{z}.
 
         Solves the optimization problem:
            minimize L(N*z) + \rho/2 * \| N*z - N*u - N*\bar{f} \|_2^2
@@ -840,7 +840,10 @@ class GAM:
              Result of the above optimization problem.
         """
 
-        prox = None
+        # Different prox operators have slightly different signatures (e.g. the
+        # binomial variant takes a covariate-class-sizes argument), so the
+        # dispatch is typed as Any to keep mypy quiet here.
+        prox: Any
         if self._family == 'normal':
             if self._link == 'identity':
                 prox = po._prox_normal_identity
@@ -908,7 +911,7 @@ class GAM:
         num_points, _ = X.shape
         eta = np.full((num_points,), self._offset)
         for name, feature in self._features.items():
-            eta += feature.predict(X[name].values)
+            eta = eta + feature.predict(np.asarray(X[name].values))
 
         return np.asarray(self._eval_inv_link(eta), dtype=float)
 
@@ -1003,7 +1006,7 @@ class GAM:
         covariate_class_sizes: npt.NDArray[Any] | None = None,
         w: npt.NDArray[Any] | None = None,
     ) -> float:
-        """Deviance
+        r"""Deviance
 
         This function works in one of two ways:
 
@@ -1061,17 +1064,34 @@ class GAM:
                 return float(y_minus_mu.dot(y_minus_mu))
             return float(w.dot(y_minus_mu * y_minus_mu))
         if self._family == "binomial":
+            # Clip mu away from 0 and 1 so log(mu) and log1p(-mu) stay finite.
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
             if w is None:
-                return float(-2.0 * np.sum(y * np.log(mu) + (m - y) * np.log1p(-mu)))
-            return float(-2.0 * w.dot(y * np.log(mu) + (m - y) * np.log1p(-mu)))
+                return float(-2.0 * np.sum(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c)))
+            return float(-2.0 * w.dot(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c)))
         if self._family == "poisson":
+            # `y * log(y / mu)` has the conventional limit 0 when y = 0.
+            y_log_term = np.where(y > 0, y * np.log(np.where(y > 0, y, 1.0) / mu), 0.0)
+            term = y_log_term - (y - mu)
             if w is None:
-                return float(2.0 * np.sum(y * np.log(y / mu) - (y - mu)))
-            return float(2.0 * w.dot(y * np.log(y / mu) - (y - mu)))
+                return float(2.0 * np.sum(term))
+            return float(2.0 * w.dot(term))
         if self._family == "gamma":
+            # Gamma deviance is undefined at y = 0 or mu <= 0 in the strict
+            # sense; clip both to a tiny positive number to keep training
+            # iterations from blowing up when mu transiently goes negative
+            # (gamma + reciprocal link does not constrain mu).
+            tiny = np.finfo(float).tiny
+            y_safe = np.where(y > 0, y, tiny)
+            mu_safe = np.where(mu > 0, mu, tiny)
             if w is None:
-                return float(2.0 * np.sum(-1.0 * np.log(y / mu) + (y - mu) / mu))
-            return float(2.0 * w.dot(-1.0 * np.log(y / mu) + (y - mu) / mu))
+                return float(
+                    2.0 * np.sum(-1.0 * np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe)
+                )
+            return float(
+                2.0 * w.dot(-1.0 * np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe)
+            )
         if self._family == "inverse_gaussian":
             if w is None:
                 return float(np.sum((y - mu) * (y - mu) / (mu * mu * y)))
@@ -1134,7 +1154,7 @@ class GAM:
         raise ValueError(f"Unsupported family {self._family!r}")
 
     def _binomial_overdispersion(self, formula: str | None = None) -> float:
-        """Over-Dispersion
+        r"""Over-Dispersion
 
         Parameters
         ----------
@@ -1316,7 +1336,11 @@ class GAM:
             multi_index = []
             dims = []
             for fname in fnames:
-                cindex, csize = self._features[fname].category_index(i)
+                # Overdispersion is only meaningful when every feature is
+                # categorical, so a runtime AttributeError on a non-
+                # categorical feature is the correct behavior.
+                feat = self._features[fname]
+                cindex, csize = feat.category_index(i)  # type: ignore[attr-defined]
                 multi_index.append(cindex)
                 dims.append(csize)
 
@@ -1334,15 +1358,15 @@ class GAM:
             if j > max_replication:
                 max_replication = j
 
-        if ((num_cc_with_replicates >= min_cc_replicates
-             and max_replication >= min_replication)):
+        if (num_cc_with_replicates >= min_cc_replicates
+             and max_replication >= min_replication):
             has_replication = True
         else:
             has_replication = False
 
-        if ((num_cc_with_replicates >= des_cc_replicates
+        if (num_cc_with_replicates >= des_cc_replicates
              and max_replication >= des_replication
-             and replication_dof >= des_replication_dof)):
+             and replication_dof >= des_replication_dof):
             has_desired_replication = True
         else:
             has_desired_replication = False
