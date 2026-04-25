@@ -73,13 +73,30 @@ def test_confidence_intervals_not_implemented() -> None:
         mdl.confidence_intervals(X)
 
 
-def test_aicc_not_implemented() -> None:
+def test_aicc_matches_formula() -> None:
+    rng = np.random.default_rng(7)
+    n = 200
+    X = pd.DataFrame({"x": rng.normal(size=n)})
+    y = 2.0 * X["x"].values + rng.normal(size=n) * 0.1
     mdl = GAM(family="normal")
     mdl.add_feature(name="x", type="linear")
-    X = pd.DataFrame({"x": np.arange(10.0)})
-    mdl.fit(X, X["x"].values, max_its=5)
-    with pytest.raises(NotImplementedError):
-        mdl.aicc()
+    mdl.fit(X, y, max_its=20)
+
+    p = mdl.dof() + (0.0 if mdl._known_dispersion else 1.0)
+    expected = mdl.aic() + 2.0 * p * (p + 1) / (n - p - 1)
+    assert mdl.aicc() == pytest.approx(expected)
+    assert mdl.aicc() > mdl.aic()
+
+
+def test_aicc_overparameterized_returns_inf() -> None:
+    # n=3 with affine + linear-feature dof + estimated dispersion gives
+    # p=3, so n - p - 1 = -1 <= 0 and AICc is undefined.
+    X = pd.DataFrame({"x": np.array([0.0, 1.0, 2.0])})
+    y = np.array([0.5, 1.5, 2.5])
+    mdl = GAM(family="normal")
+    mdl.add_feature(name="x", type="linear")
+    mdl.fit(X, y, max_its=5)
+    assert mdl.aicc() == float("inf")
 
 
 def test_inconsistent_X_y_lengths_raises() -> None:

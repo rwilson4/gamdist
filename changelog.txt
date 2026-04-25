@@ -1,3 +1,19 @@
+2026-04-25 : AICc
+- Implement GAM.aicc() using the Hurvich-Tsai small-sample correction
+  AICc = AIC + 2p(p+1)/(n-p-1), matching the convention used by aic()
+  for counting parameters under estimated dispersion. Returns +inf
+  when n <= p + 1 (overparameterized). summary() now prints AICc.
+
+2026-04-25 : Doc cleanup
+- Refresh CLAUDE.md to describe the Python 3.11+ codebase: drop the
+  Python-2 framing, the obsolete pip/test.py instructions, and the
+  references to the removed multiprocessing path and the long-gone
+  Cython cdef remnants. Add a short Tests/CI section.
+- Remove the dead "# self._rho = mv['rho']" line in GAM._load(); fit()
+  resets _rho on every call, so persisting it had no effect.
+- Drop the stale "AICc" line from GAM.summary()'s docstring; summary()
+  has never printed AICc, and aicc() raises NotImplementedError.
+
 2026-04-25 : Modernization (v0.2.0)
 - Drop Python 2 support; require Python 3.11 or newer.
 - Switch packaging from setup.py to pyproject.toml with the hatchling
