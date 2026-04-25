@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 from scipy.optimize import minimize_scalar
+from scipy.special import expit
 
 FloatArray = npt.NDArray[np.float64]
 InvLink = Callable[[float], float]
@@ -76,37 +77,43 @@ def _prox_normal(
 
 
 def _prox_binomial_logit_scalar(xx: Sequence[float]) -> float:
-    v = xx[0]
-    mu = xx[1]
-    y = xx[2]
-    m = xx[3]
-    w: float | None = xx[4] if len(xx) >= 5 else None
+    v = float(xx[0])
+    mu = float(xx[1])
+    y = float(xx[2])
+    m = float(xx[3])
+    w_eff = float(xx[4]) if len(xx) >= 5 else 1.0
+
+    def obj(z: float) -> float:
+        # log1p(exp(z)) computed stably as np.logaddexp(0, z).
+        return (
+            w_eff * m * float(np.logaddexp(0.0, z))
+            - w_eff * y * z
+            + 0.5 * mu * (z - v) * (z - v)
+        )
 
     tol = 1e-3
     max_its = 100
-
     x = 0.0
-    if w is None:
-        mu_v_plus_w_y = mu * v + y
-    else:
-        mu_v_plus_w_y = mu * v + w * y
-
     for _ in range(max_its):
-        expx = float(np.exp(x))
-        one_over_one_plus_expx = 1.0 / (1.0 + expx)
-        if w is None:
-            num = mu * x + m * expx * one_over_one_plus_expx - mu_v_plus_w_y
-            denom = mu + m * expx * one_over_one_plus_expx * one_over_one_plus_expx
-        else:
-            num = mu * x + w * m * expx * one_over_one_plus_expx - mu_v_plus_w_y
-            denom = mu + w * m * expx * one_over_one_plus_expx * one_over_one_plus_expx
-
-        dx = num / denom
-        x -= dx
+        sigma = float(expit(x))
+        grad = mu * (x - v) + w_eff * (m * sigma - y)
+        hess = mu + w_eff * m * sigma * (1.0 - sigma)
+        dx = grad / hess
         if abs(dx) < tol:
             return x
+        # Damped Newton: backtrack until the objective decreases.
+        f_curr = obj(x)
+        step = 1.0
+        x_new = x - dx
+        while obj(x_new) >= f_curr and step > 1e-12:
+            step *= 0.5
+            x_new = x - step * dx
+        x = x_new
 
-    raise ValueError("Dual variable update failed to converge.")
+    # Newton failed to converge in max_its; fall back to a bracketed
+    # 1-D minimization. The minimizer is convex in z, so this always
+    # finds the same optimum that Newton would have reached.
+    return float(minimize_scalar(obj).x)
 
 
 def _prox_binomial_logit(
@@ -165,35 +172,36 @@ def _prox_binomial(
 
 
 def _prox_poisson_log_scalar(xx: Sequence[float]) -> float:
-    v = xx[0]
-    mu = xx[1]
-    y = xx[2]
-    w: float | None = xx[3] if len(xx) >= 4 else None
+    v = float(xx[0])
+    mu = float(xx[1])
+    y = float(xx[2])
+    w_eff = float(xx[3]) if len(xx) >= 4 else 1.0
+
+    def obj(z: float) -> float:
+        return w_eff * float(np.exp(z)) - w_eff * y * z + 0.5 * mu * (z - v) * (z - v)
 
     tol = 1e-3
     max_its = 100
-
     x = 0.0
-    if w is None:
-        mu_v_plus_w_y = mu * v + y
-    else:
-        mu_v_plus_w_y = mu * v + w * y
-
     for _ in range(max_its):
-        expx = float(np.exp(x))
-        if w is None:
-            num = mu * x + expx - mu_v_plus_w_y
-            denom = mu + expx
-        else:
-            num = mu * x + w * expx - mu_v_plus_w_y
-            denom = mu + w * expx
-
-        dx = num / denom
-        x -= dx
+        # Cap exp(x) below the float64 overflow threshold so a transient
+        # large step doesn't blow up the gradient computation. Damping
+        # below pulls x back into a sensible range.
+        expx = float(np.exp(min(x, 700.0)))
+        grad = mu * (x - v) + w_eff * (expx - y)
+        hess = mu + w_eff * expx
+        dx = grad / hess
         if abs(dx) < tol:
             return x
+        f_curr = obj(x)
+        step = 1.0
+        x_new = x - dx
+        while obj(x_new) >= f_curr and step > 1e-12:
+            step *= 0.5
+            x_new = x - step * dx
+        x = x_new
 
-    raise ValueError("Dual variable update failed to converge.")
+    return float(minimize_scalar(obj).x)
 
 
 def _prox_poisson_log(
