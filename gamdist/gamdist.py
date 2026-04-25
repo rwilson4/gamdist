@@ -1440,8 +1440,32 @@ class GAM:
         #          + 2. * p * self.dispersion() / self._num_obs)
 
     def aicc(self) -> float:
-        # Eqn 6.32 on p. 304 of [GAMr]
-        raise NotImplementedError("aicc is not yet implemented")
+        """AIC corrected for finite sample size.
+
+        Applies the Hurvich-Tsai small-sample correction to ``aic()``:
+
+            AICc = AIC + 2 * p * (p + 1) / (n - p - 1)
+
+        where ``p`` is the effective number of parameters
+        (``dof()``, plus one if the dispersion is being estimated)
+        and ``n`` is the number of observations. This is Eqn 6.32
+        on p. 304 of [GAMr]. As ``n`` grows the correction term
+        vanishes and AICc reduces to AIC. AICc is preferable to AIC
+        when ``n`` is small relative to ``p``.
+
+        Returns ``+inf`` for an overparameterized fit
+        (``n <= p + 1``), where the correction term is undefined
+        and the model has no useful AICc.
+        """
+        p = self.dof()
+        if not self._known_dispersion:
+            # Match the convention in aic(): one extra parameter for
+            # the estimated dispersion.
+            p += 1
+        n = self._num_obs
+        if n - p - 1 <= 0:
+            return float("inf")
+        return self.aic() + 2.0 * p * (p + 1) / (n - p - 1)
 
     def ubre(self, gamma: float = 1.0) -> float:
         """Un-Biased Risk Estimator
@@ -1488,6 +1512,7 @@ class GAM:
                      that of the fitted model, times twice the
                      dispersion.
            AIC:      Akaike Information Criterion.
+           AICc:     AIC with correction for finite data sets.
            UBRE:     Unbiased Risk Estimator (if dispersion is known).
            GCV:      Generalized Cross Validation (if dispersion is estimated).
 
@@ -1506,6 +1531,7 @@ class GAM:
         print(f"edof: {self.dof():0.0f}")
         print(f"Deviance: {self.deviance():0.06g}")
         print(f"AIC: {self.aic():0.06g}")
+        print(f"AICc: {self.aicc():0.06g}")
 
         if self._known_dispersion:
             print(f"UBRE: {self.ubre():0.06g}")

@@ -1,3 +1,9 @@
+2026-04-25 : AICc
+- Implement GAM.aicc() using the Hurvich-Tsai small-sample correction
+  AICc = AIC + 2p(p+1)/(n-p-1), matching the convention used by aic()
+  for counting parameters under estimated dispersion. Returns +inf
+  when n <= p + 1 (overparameterized). summary() now prints AICc.
+
 2026-04-25 : Doc cleanup
 - Refresh CLAUDE.md to describe the Python 3.11+ codebase: drop the
   Python-2 framing, the obsolete pip/test.py instructions, and the

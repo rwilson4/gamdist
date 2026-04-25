@@ -62,8 +62,8 @@ CI runs all of the above on Python 3.11 and 3.12 (see
 
 - The package uses `pickle` for save/load and is **not designed for
   untrusted input**.
-- `confidence_intervals()` and `aicc()` are not yet implemented and
-  raise `NotImplementedError`.
+- `confidence_intervals()` is not yet implemented and raises
+  `NotImplementedError`.
 - Some non-canonical family/link combinations are non-convex; the
   ADMM iteration is not guaranteed to converge there. In particular,
   gamma + reciprocal can produce non-positive `mu` on small datasets.

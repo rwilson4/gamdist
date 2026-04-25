@@ -39,7 +39,7 @@ The categorical-feature LP/QP uses CLARABEL by default (ECOS is no longer bundle
 
 `pytest` suite is 96 tests, 84% line coverage. CI (`.github/workflows/ci.yml`) runs `ruff check`, `mypy gamdist`, and `pytest --cov=gamdist --cov-fail-under=80` on Python 3.11 and 3.12. Lint/type config lives in `pyproject.toml`.
 
-`GAM.confidence_intervals()` and `GAM.aicc()` are intentional `NotImplementedError` stubs (and tested as such); the corresponding entries on the to-do list at the top of `gamdist/gamdist.py` are still open.
+`GAM.confidence_intervals()` is an intentional `NotImplementedError` stub (and tested as such); the corresponding entry on the to-do list at the top of `gamdist/gamdist.py` is still open.
 
 ## Conventions
 
