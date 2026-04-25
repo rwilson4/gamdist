@@ -1,3 +1,21 @@
+2026-04-25 : Parallel feature optimization
+- GAM.fit() now accepts an n_jobs argument. With n_jobs > 1 (or
+  n_jobs=-1 for os.cpu_count()), the per-feature primal step in each
+  ADMM iteration is dispatched through a ThreadPoolExecutor created
+  once at the start of fit() and shut down on return. NumPy / SciPy /
+  cvxpy release the GIL during their numeric kernels, so threading
+  produces real speedup -- expect roughly 2-4x on models with several
+  non-trivial features (splines, categoricals via cvxpy). Default
+  remains n_jobs=1 (serial) since pure linear-only models are usually
+  faster serial.
+- Refactor: extract the ADMM main loop and per-feature dispatch from
+  fit() into _admm_loop and _optimize_features helper methods. This
+  is what lets the pool lifecycle be expressed as a small try/finally
+  in fit() without re-indenting ~70 lines of loop body.
+- Serial and parallel runs accumulate f_new in self._features
+  insertion order, so on identical inputs they produce bit-identical
+  results (test_fit_n_jobs_2_matches_serial verifies).
+
 2026-04-25 : Residuals vs predictor plots
 - Add GAM.plot_residuals_vs_predictor(predictor, kind=..., name=...).
   Scatter of residuals against an arbitrary 1-D array of length
