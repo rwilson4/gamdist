@@ -1,3 +1,19 @@
+2026-04-25 : Cleanup follow-ups
+- Categorical predict() now emits a UserWarning naming any categories
+  not seen during fit (effect 0 fallback is unchanged).
+- Harden the Newton iterations in _prox_binomial_logit_scalar and
+  _prox_poisson_log_scalar: switch to scipy.special.expit /
+  np.logaddexp for stability, add a backtracking line search, and
+  fall back to scipy.optimize.minimize_scalar instead of raising
+  ValueError when max_its is exhausted.
+- Add GAM.residuals(kind="response"|"pearson"|"deviance") and
+  GAM.plot_residuals(): a 1x2 figure with residuals-vs-fitted on the
+  left and a normal Q-Q plot on the right.
+- Implement Poisson overdispersion: GAM(family="poisson",
+  estimate_overdispersion=True) now estimates phi via the Pearson
+  chi-square / dof formula. Without the flag the dispersion is still
+  fixed at 1.0.
+
 2026-04-25 : BIC and pseudo-R^2
 - Add GAM.bic() = deviance/dispersion + log(n) * p, matching the
   parameter-counting convention used by aic()/aicc().

@@ -58,7 +58,6 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Hierarchical models
 # - Piecewise constant fits, total variation regularization
 # - Monotone constraint
-# - Implement overdispersion for Poisson family
 # - Implement Multinomial, Proportional Hazards
 # - Implement outlier detection
 # - Confidence intervals on mu, predictions (probably need to use Bootstrap but can
@@ -85,6 +84,7 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Constrain spline to have mean prediction 0 over the data
 # - Save and load properly
 # - Implement overdispersion for Binomial family
+# - Implement overdispersion for Poisson family
 
 FAMILIES = ['normal',
             'binomial',
@@ -1296,6 +1296,10 @@ class GAM:
                 return float(self._binomial_overdispersion())
             return 1.0
         if self._family == "poisson":
+            if self._known_dispersion:
+                return float(self._dispersion)
+            if self._estimate_overdispersion:
+                return float(self._poisson_overdispersion())
             return 1.0
         if self._family == "gamma":
             if self._known_dispersion:
@@ -1563,6 +1567,34 @@ class GAM:
             self._known_dispersion = True
             self._dispersion = s2
             return s2
+
+    def _poisson_overdispersion(self) -> float:
+        r"""Estimate the Poisson dispersion as the Pearson chi-square / dof.
+
+        Under the standard Poisson model ``Var(Y) = mu``; if observed
+        variance is larger (overdispersion) the dispersion ``phi`` is
+        estimated as
+
+            phi = sum_i (y_i - mu_i)^2 / mu_i  /  (n - p)
+
+        where ``p = dof()``. This is the Pearson form of Eqn 3.10 in
+        Wood (2017). The replication-based estimator used for
+        ``_binomial_overdispersion`` is binomial-specific (it relies on
+        covariate-class replicates) and is not applicable here.
+
+        The result is cached on ``self._dispersion`` and
+        ``self._known_dispersion`` so subsequent calls are O(1).
+        """
+        mu = self._eval_inv_link(self._num_features * self.f_bar)
+        # Guard against transient mu <= 0 from a non-canonical link.
+        tiny = np.finfo(float).tiny
+        mu_safe = np.where(mu > 0, mu, tiny)
+        res = self._y - mu
+        n_minus_p = self._num_obs - self.dof()
+        s2 = float(np.sum(res * res / mu_safe) / n_minus_p)
+        self._known_dispersion = True
+        self._dispersion = s2
+        return s2
 
     def dof(self) -> float:
         """Degrees of freedom: sum of feature DOFs plus the affine intercept."""
