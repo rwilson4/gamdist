@@ -69,15 +69,15 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Runtime optimization (Cython)
 # - Fit in parallel
 # - Residuals
-#   - Compute different types of residuals (Sec 3.1.7 of [GAMr])
-#   - Plot residuals against mean response, variance, predictor, unused predictor
-#   - QQ plot of residuals
+#   - Anscombe residuals
+#   - Plot residuals against each predictor / unused predictors
 #
 # Done:
 # - Implement Gaussian, Binomial, Poisson, Gamma, Inv Gaussian,
 # - Plot splines
 # - Deviance (on training set and test set), AIC, AICc, BIC, R^2,
 #   Dispersion, GCV, UBRE
+# - Pearson / deviance / response residuals; residual-vs-fitted and QQ plots
 # - Write documentation
 # - Check implementation of Gamma dispersion
 # - Implement probit, complementary log-log links.
@@ -997,6 +997,151 @@ class GAM:
 
         """
         self._features[name]._plot(true_fn=true_fn)
+
+    def residuals(
+        self,
+        kind: Literal["response", "pearson", "deviance"] = "deviance",
+    ) -> FloatArray:
+        """Residuals for the fitted model.
+
+        Parameters
+        ----------
+        kind : ``"response"``, ``"pearson"``, or ``"deviance"``
+            ``"response"`` returns ``y - mu`` (raw error).
+            ``"pearson"`` returns the standardized residual
+            ``(y - E[y]) / sqrt(Var(y))`` using the family's variance
+            function and the estimated dispersion. For binomial with
+            covariate classes, ``y`` is the count and ``E[y] = m * mu``.
+            ``"deviance"`` returns ``sign(y - E[y]) * sqrt(d_i)``, where
+            ``d_i >= 0`` is the per-observation deviance contribution;
+            squaring and summing gives the total deviance (Wood 2017
+            Sec 3.1.7).
+
+        Returns
+        -------
+        residuals : array of shape (n_obs,)
+        """
+        if not self._fitted:
+            raise AttributeError("Model not yet fit.")
+
+        y = self._y
+        mu = self._eval_inv_link(self._num_features * self.f_bar)
+        if self._has_covariate_classes:
+            m: npt.NDArray[Any] | float = self._covariate_class_sizes
+        else:
+            m = 1.0
+
+        if kind == "response":
+            return np.asarray(y - mu, dtype=float)
+        if kind == "pearson":
+            return self._pearson_residuals(y, mu, m)
+        if kind == "deviance":
+            d_i = self._unit_deviance_for_residuals(y, mu, m)
+            if self._family == "binomial":
+                return np.asarray(np.sign(y - m * mu) * np.sqrt(d_i), dtype=float)
+            return np.asarray(np.sign(y - mu) * np.sqrt(d_i), dtype=float)
+        raise ValueError(f"Unknown residual kind: {kind!r}")
+
+    def _pearson_residuals(
+        self,
+        y: npt.NDArray[Any],
+        mu: npt.NDArray[Any],
+        m: npt.NDArray[Any] | float,
+    ) -> FloatArray:
+        """Pearson residuals for each family."""
+        phi = self.dispersion()
+        if self._family == "binomial":
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
+            var = m * mu_c * (1.0 - mu_c)
+            return np.asarray((y - m * mu_c) / np.sqrt(var * phi), dtype=float)
+        if self._family == "normal":
+            return np.asarray((y - mu) / np.sqrt(phi), dtype=float)
+        if self._family == "poisson":
+            return np.asarray((y - mu) / np.sqrt(mu * phi), dtype=float)
+        if self._family == "gamma":
+            return np.asarray((y - mu) / np.sqrt(mu * mu * phi), dtype=float)
+        if self._family == "inverse_gaussian":
+            return np.asarray((y - mu) / np.sqrt(mu * mu * mu * phi), dtype=float)
+        raise ValueError(f"Unsupported family {self._family!r}")
+
+    def _unit_deviance_for_residuals(
+        self,
+        y: npt.NDArray[Any],
+        mu: npt.NDArray[Any],
+        m: npt.NDArray[Any] | float,
+    ) -> FloatArray:
+        """Per-observation deviance contribution ``d_i >= 0``.
+
+        For binomial this differs from the per-term contribution
+        accumulated by ``deviance()``: the ``deviance()`` form omits
+        the saturated-likelihood constant (which doesn't affect model
+        fitting), but ``d_i`` for residuals must include it so that
+        ``sqrt(d_i)`` is real and non-negative.
+        """
+        if self._family == "normal":
+            return np.asarray((y - mu) ** 2, dtype=float)
+        if self._family == "binomial":
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t1 = np.where(y > 0, y * np.log(y / (m * mu_c)), 0.0)
+                t2 = np.where(
+                    y < m,
+                    (m - y) * np.log((m - y) / (m * (1.0 - mu_c))),
+                    0.0,
+                )
+            return np.maximum(2.0 * (t1 + t2), 0.0)
+        if self._family == "poisson":
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = np.where(y > 0, y * np.log(np.where(y > 0, y, 1.0) / mu), 0.0)
+            return np.maximum(2.0 * (t - (y - mu)), 0.0)
+        if self._family == "gamma":
+            tiny = np.finfo(float).tiny
+            y_safe = np.where(y > 0, y, tiny)
+            mu_safe = np.where(mu > 0, mu, tiny)
+            return np.maximum(
+                2.0 * (-np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe), 0.0
+            )
+        if self._family == "inverse_gaussian":
+            return np.asarray((y - mu) ** 2 / (mu * mu * y), dtype=float)
+        raise ValueError(f"Unsupported family {self._family!r}")
+
+    def plot_residuals(
+        self,
+        kind: Literal["response", "pearson", "deviance"] = "deviance",
+    ) -> Any:
+        """Plot residuals vs. fitted values and a normal QQ plot.
+
+        Produces a 1x2 matplotlib figure: residual-vs-fitted on the
+        left, Q-Q plot against the standard normal on the right.
+
+        Parameters
+        ----------
+        kind : ``"response"``, ``"pearson"``, or ``"deviance"``
+            Forwarded to ``residuals()``.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+        """
+        import matplotlib.pyplot as plt
+
+        res = self.residuals(kind)
+        mu = self._eval_inv_link(self._num_features * self.f_bar)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+        ax1.scatter(mu, res, s=10, alpha=0.6)
+        ax1.axhline(0.0, color="grey", linewidth=0.5)
+        ax1.set_xlabel("Fitted (mu)")
+        ax1.set_ylabel(f"{kind.capitalize()} residual")
+        ax1.set_title("Residuals vs Fitted")
+
+        stats.probplot(res, plot=ax2)
+        ax2.set_title("Normal Q-Q")
+
+        fig.tight_layout()
+        return fig
 
     def deviance(
         self,
