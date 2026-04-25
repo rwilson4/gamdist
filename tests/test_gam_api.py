@@ -152,3 +152,73 @@ def test_exponential_collapses_to_gamma() -> None:
     assert mdl._family == "gamma"
     assert mdl._known_dispersion is True
     assert mdl._dispersion == 1.0
+
+
+def _make_multi_feature_data(n: int = 200, seed: int = 0):
+    """Three nontrivial features so n_jobs > 1 actually has work to dispatch."""
+    rng = np.random.default_rng(seed)
+    X = pd.DataFrame(
+        {
+            "x1": rng.normal(size=n),
+            "x2": rng.uniform(0.0, 1.0, size=n),
+            "g": rng.choice(np.array(["a", "b", "c"]), size=n),
+        }
+    )
+    y = (
+        0.5 * X["x1"].values
+        + 2.0 * X["x2"].values
+        + np.where(
+            X["g"].values == "a", 0.3, np.where(X["g"].values == "b", -0.1, 0.2)
+        )
+        + rng.normal(size=n) * 0.1
+    )
+    return X, y
+
+
+def _fit_with_n_jobs(X, y, n_jobs: int) -> GAM:
+    mdl = GAM(family="normal")
+    mdl.add_feature(name="x1", type="linear")
+    mdl.add_feature(name="x2", type="spline")
+    mdl.add_feature(name="g", type="categorical")
+    mdl.fit(X, y, max_its=20, n_jobs=n_jobs)
+    return mdl
+
+
+def test_fit_n_jobs_2_matches_serial() -> None:
+    X, y = _make_multi_feature_data()
+    serial = _fit_with_n_jobs(X, y, n_jobs=1)
+    parallel = _fit_with_n_jobs(X, y, n_jobs=2)
+    # f_bar is the per-observation linear predictor accumulator -- the
+    # primary state mutated by the loop. Serial and parallel paths
+    # iterate self._features in insertion order on both, so accumulation
+    # of f_new is bit-deterministic; the rest of ADMM is functional.
+    np.testing.assert_allclose(serial.f_bar, parallel.f_bar, atol=1e-10)
+    np.testing.assert_allclose(serial.predict(X), parallel.predict(X), atol=1e-10)
+
+
+def test_fit_n_jobs_zero_raises() -> None:
+    X, y = _make_multi_feature_data(n=20)
+    mdl = GAM(family="normal")
+    mdl.add_feature(name="x1", type="linear")
+    with pytest.raises(ValueError, match="n_jobs must be"):
+        mdl.fit(X, y, max_its=5, n_jobs=0)
+
+
+def test_fit_n_jobs_minus_one_runs() -> None:
+    X, y = _make_multi_feature_data(n=80)
+    mdl = GAM(family="normal")
+    mdl.add_feature(name="x1", type="linear")
+    mdl.add_feature(name="g", type="categorical")
+    mdl.fit(X, y, max_its=10, n_jobs=-1)
+    assert mdl._fitted
+    # Pool must be cleaned up when fit() returns.
+    assert mdl._pool is None
+
+
+def test_fit_pool_torn_down_after_fit() -> None:
+    X, y = _make_multi_feature_data(n=80)
+    mdl = GAM(family="normal")
+    mdl.add_feature(name="x1", type="linear")
+    mdl.add_feature(name="x2", type="spline")
+    mdl.fit(X, y, max_its=10, n_jobs=2)
+    assert mdl._pool is None  # ThreadPoolExecutor.shutdown() was called.

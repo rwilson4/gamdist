@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import pickle
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
 
 import numpy as np
@@ -67,7 +68,6 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Group lasso penalty (l2 norm -- not squared -- or l_\infty norm on f_j(x_j; p_j))
 # - Interactions
 # - Runtime optimization (Cython)
-# - Fit in parallel
 #
 # Done:
 # - Implement Gaussian, Binomial, Poisson, Gamma, Inv Gaussian,
@@ -84,6 +84,7 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # - Save and load properly
 # - Implement overdispersion for Binomial family
 # - Implement overdispersion for Poisson family
+# - Fit in parallel (n_jobs= argument on fit(), ThreadPoolExecutor)
 
 FAMILIES = ['normal',
             'binomial',
@@ -594,6 +595,7 @@ class GAM:
         verbose: bool = False,
         plot_convergence: bool = False,
         max_its: int = 100,
+        n_jobs: int = 1,
     ) -> None:
         """Fit a Generalized Additive Model to data.
 
@@ -668,12 +670,28 @@ class GAM:
              want to see this.) Defaults to False.
          max_its : integer
              Maximum number of iterations. Defaults to 100.
+         n_jobs : integer
+             Number of threads to use for the per-feature primal step
+             within each ADMM iteration. Defaults to 1 (serial); pass
+             ``-1`` to use ``os.cpu_count()``. NumPy / SciPy / cvxpy
+             release the GIL during their numeric kernels, so threading
+             produces real speedup. Expect a 2-4x ceiling on models
+             with several non-trivial features (splines, categoricals
+             via cvxpy); pure linear-only models are usually faster
+             serial because the per-feature work is too cheap to
+             amortize the thread-dispatch overhead.
 
         Returns
         -------
          (nothing)
 
         """
+        if n_jobs == -1:
+            n_jobs = os.cpu_count() or 1
+        if n_jobs < 1:
+            raise ValueError(f"n_jobs must be >= 1 or -1; got {n_jobs}")
+        # No point in more workers than features.
+        n_jobs = min(n_jobs, max(self._num_features, 1))
         if save_flag and self._name is None:
             msg = 'Cannot save a GAM with no name.'
             msg += ' Specify name when instantiating model.'
@@ -723,6 +741,34 @@ class GAM:
         self.dual_tol = []
         self.dev = []
 
+        self._pool = ThreadPoolExecutor(max_workers=n_jobs) if n_jobs > 1 else None
+        try:
+            self._admm_loop(max_its, eps_abs, eps_rel, fj, verbose)
+        finally:
+            if self._pool is not None:
+                self._pool.shutdown(wait=True)
+            self._pool = None
+
+        self._fitted = True
+        if save_flag:
+            self._save()
+
+        if plot_convergence:
+            _plot_convergence(self.prim_res, self.prim_tol, self.dual_res,
+                              self.dual_tol, self.dev)
+
+    def _admm_loop(
+        self,
+        max_its: int,
+        eps_abs: float,
+        eps_rel: float,
+        fj: dict[str, FloatArray],
+        verbose: bool,
+    ) -> None:
+        """Run the ADMM iterations. Extracted from ``fit()`` so the
+        ThreadPoolExecutor lifecycle (set up before the loop, torn
+        down after) can be expressed as a simple try/finally without
+        re-indenting the loop body."""
         z_new = np.zeros(self._num_obs)
 
         for i in range(max_its):
@@ -733,11 +779,7 @@ class GAM:
             fpumz = self._num_features * (self.f_bar + self.u - self.z_bar)
             fj_new: dict[str, FloatArray] = {}
             f_new = np.full((self._num_obs,), self._offset)
-            for name, feature in self._features.items():
-                if verbose:
-                    print(f"Optimizing {name:s}")
-                fj_new[name] = feature.optimize(fpumz, self._rho)
-                f_new += fj_new[name]
+            self._optimize_features(fpumz, fj_new, f_new, verbose)
 
             f_new /= self._num_features
 
@@ -798,13 +840,38 @@ class GAM:
             if verbose:
                 print("Fit did not converge")
 
-        self._fitted = True
-        if save_flag:
-            self._save()
+    def _optimize_features(
+        self,
+        fpumz: FloatArray,
+        fj_new: dict[str, FloatArray],
+        f_new: FloatArray,
+        verbose: bool,
+    ) -> None:
+        """Per-feature primal step. Populates ``fj_new`` and accumulates
+        into ``f_new`` in-place. Uses ``self._pool`` (a
+        ``ThreadPoolExecutor`` set up by ``fit()``) when present.
 
-        if plot_convergence:
-            _plot_convergence(self.prim_res, self.prim_tol, self.dual_res,
-                              self.dual_tol, self.dev)
+        ``self._features`` insertion order is preserved on both the
+        serial and parallel paths so ``f_new`` accumulates terms in
+        the same order -- floating-point addition is not associative,
+        so this matters for serial-vs-parallel bit-parity tests.
+        """
+        if self._pool is None:
+            for name, feature in self._features.items():
+                if verbose:
+                    print(f"Optimizing {name:s}")
+                fj_new[name] = feature.optimize(fpumz, self._rho)
+                f_new += fj_new[name]
+        else:
+            if verbose:
+                print(f"Optimizing {self._num_features:d} features in parallel")
+            futures = {
+                name: self._pool.submit(feature.optimize, fpumz, self._rho)
+                for name, feature in self._features.items()
+            }
+            for name, fut in futures.items():
+                fj_new[name] = fut.result()
+                f_new += fj_new[name]
 
     def _optimize(self, upf: FloatArray, N: int) -> FloatArray:
         r"""Optimize \bar{z}.
