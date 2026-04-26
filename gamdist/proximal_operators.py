@@ -47,36 +47,6 @@ def _prox_normal_identity(
     return (w * y + mu * v) / (w + mu)
 
 
-def _prox_normal(
-    v: FloatArray,
-    mu: float,
-    y: FloatArray,
-    w: FloatArray | None = None,
-    inv_link: InvLink | None = None,
-    p: Any = None,
-) -> FloatArray:
-    if inv_link is None:
-        raise ValueError("inv_link is required.")
-
-    if w is None:
-
-        def obj_fun(x: float, _v: float, _y: float) -> float:
-            ilx = inv_link(x)
-            return 0.5 * ilx * ilx - _y * ilx + 0.5 * mu * (x - _v) * (x - _v)
-
-        return np.array(
-            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
-        )
-
-    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
-        ilx = inv_link(x)
-        return _w * (0.5 * ilx * ilx - _y * ilx) + 0.5 * mu * (x - _v) * (x - _v)
-
-    return np.array(
-        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
-    )
-
-
 def _prox_binomial_logit_scalar(xx: Sequence[float]) -> float:
     v = float(xx[0])
     mu = float(xx[1])
@@ -136,47 +106,6 @@ def _prox_binomial_logit(
     return np.array([_prox_binomial_logit_scalar(item) for item in items])
 
 
-def _prox_binomial(
-    v: FloatArray,
-    mu: float,
-    y: FloatArray,
-    ccs: FloatArray | None = None,
-    w: FloatArray | None = None,
-    inv_link: InvLink | None = None,
-    p: Any = None,
-) -> FloatArray:
-    if inv_link is None:
-        raise ValueError("inv_link is required.")
-
-    if w is None:
-
-        def obj_fun(x: float, _v: float, _y: float) -> float:
-            ilx = inv_link(x)
-            m = 1.0
-            return (
-                (_y - m) * np.log1p(-ilx)
-                - _y * np.log(ilx)
-                + 0.5 * mu * (x - _v) * (x - _v)
-            )
-
-        return np.array(
-            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
-        )
-
-    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
-        ilx = inv_link(x)
-        m = 1.0
-        return (
-            _w * (_y - m) * np.log1p(-ilx)
-            - _w * _y * np.log(ilx)
-            + 0.5 * mu * (x - _v) * (x - _v)
-        )
-
-    return np.array(
-        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
-    )
-
-
 def _prox_poisson_log_scalar(xx: Sequence[float]) -> float:
     v = float(xx[0])
     mu = float(xx[1])
@@ -227,36 +156,6 @@ def _prox_poisson_log(
     return np.array([_prox_poisson_log_scalar(item) for item in items])
 
 
-def _prox_poisson(
-    v: FloatArray,
-    mu: float,
-    y: FloatArray,
-    w: FloatArray | None = None,
-    inv_link: InvLink | None = None,
-    p: Any = None,
-) -> FloatArray:
-    if inv_link is None:
-        raise ValueError("inv_link is required.")
-
-    if w is None:
-
-        def obj_fun(x: float, _v: float, _y: float) -> float:
-            ilx = inv_link(x)
-            return (ilx - _y * np.log(ilx)) + 0.5 * mu * (x - _v) * (x - _v)
-
-        return np.array(
-            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
-        )
-
-    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
-        ilx = inv_link(x)
-        return _w * (ilx - _y * np.log(ilx)) + 0.5 * mu * (x - _v) * (x - _v)
-
-    return np.array(
-        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
-    )
-
-
 def _prox_gamma_reciprocal(
     v: FloatArray,
     mu: float,
@@ -273,36 +172,6 @@ def _prox_gamma_reciprocal(
     mu_v_minus_w_y = mu * v - w * y
     return (0.5 / mu) * mu_v_minus_w_y + np.sqrt(
         mu_v_minus_w_y * mu_v_minus_w_y + (4 * mu) * w
-    )
-
-
-def _prox_gamma(
-    v: FloatArray,
-    mu: float,
-    y: FloatArray,
-    w: FloatArray | None = None,
-    inv_link: InvLink | None = None,
-    p: Any = None,
-) -> FloatArray:
-    if inv_link is None:
-        raise ValueError("inv_link is required.")
-
-    if w is None:
-
-        def obj_fun(x: float, _v: float, _y: float) -> float:
-            ilx = inv_link(x)
-            return (np.log(ilx) + _y / ilx) + 0.5 * mu * (x - _v) * (x - _v)
-
-        return np.array(
-            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
-        )
-
-    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
-        ilx = inv_link(x)
-        return _w * (np.log(ilx) + _y / ilx) + 0.5 * mu * (x - _v) * (x - _v)
-
-    return np.array(
-        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
     )
 
 
@@ -359,36 +228,6 @@ def _prox_inv_gaussian_reciprocal_squared(
         items = [tuple(t) for t in zip(v, mu_arr, y, w, strict=True)]
     return np.array(
         [_prox_inv_gaussian_reciprocal_squared_scalar(item) for item in items]
-    )
-
-
-def _prox_inv_gaussian(
-    v: FloatArray,
-    mu: float,
-    y: FloatArray,
-    w: FloatArray | None = None,
-    inv_link: InvLink | None = None,
-    p: Any = None,
-) -> FloatArray:
-    if inv_link is None:
-        raise ValueError("inv_link is required.")
-
-    if w is None:
-
-        def obj_fun(x: float, _v: float, _y: float) -> float:
-            ilx = inv_link(x)
-            return (-1.0 / ilx + 0.5 * _y * ilx * ilx) + 0.5 * mu * (x - _v) * (x - _v)
-
-        return np.array(
-            [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
-        )
-
-    def obj_fun_w(x: float, _v: float, _y: float, _w: float) -> float:
-        ilx = inv_link(x)
-        return _w * (-1.0 / ilx + 0.5 * _y * ilx * ilx) + 0.5 * mu * (x - _v) * (x - _v)
-
-    return np.array(
-        [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
     )
 
 

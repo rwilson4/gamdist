@@ -281,3 +281,76 @@ def test_huber_identity_continuous_at_threshold() -> None:
     inside = po._prox_huber_identity(v, mu, y_just_inside, delta=delta)
     outside = po._prox_huber_identity(v, mu, y_just_outside, delta=delta)
     np.testing.assert_allclose(inside, outside, atol=1e-7)
+
+
+def test_prox_poisson_log_array_with_weights() -> None:
+    v = np.array([0.5, 1.0])
+    y = np.array([1.0, 2.0])
+    w = np.array([1.0, 2.0])
+    out = po._prox_poisson_log(v, mu=2.0, y=y, w=w)
+    assert out.shape == v.shape
+    assert np.all(np.isfinite(out))
+
+
+def test_prox_gamma_reciprocal_with_weights() -> None:
+    v = np.array([0.5, 1.0])
+    y = np.array([1.0, 2.0])
+    w = np.array([1.0, 2.0])
+    out = po._prox_gamma_reciprocal(v, mu=1.0, y=y, w=w)
+    assert out.shape == v.shape
+
+
+def test_prox_inv_gaussian_reciprocal_squared_with_weights() -> None:
+    v = np.array([0.5, 1.0])
+    y = np.array([1.0, 2.0])
+    w = np.array([1.0, 2.0])
+    out = po._prox_inv_gaussian_reciprocal_squared(v, mu=1.0, y=y, w=w)
+    assert out.shape == v.shape
+
+
+def test_prox_inv_gaussian_reciprocal_squared_robust_across_grid() -> None:
+    """The eta-space Newton solver should never raise on a representative
+    input grid; the previous undamped z-space Newton could crash with
+    'Dual variable update failed to converge.' on harder inputs."""
+    grid_v = [0.01, 0.1, 1.0, 10.0, 100.0]
+    grid_mu = [0.1, 1.0, 10.0]
+    grid_y = [0.01, 0.1, 1.0, 10.0]
+    for v in grid_v:
+        for mu in grid_mu:
+            for y in grid_y:
+                z2 = po._prox_inv_gaussian_reciprocal_squared_scalar([v, mu, y])
+                assert np.isfinite(z2)
+                assert z2 > 0.0
+
+
+def test_prox_inv_gaussian_reciprocal_squared_matches_eta_minimization() -> None:
+    """The prox is convex in eta = z^2; verify the z-space solver returns the
+    same eta as a direct convex minimization in eta."""
+    from scipy.optimize import minimize_scalar
+
+    cases = [
+        (0.5, 1.0, 1.0, None),
+        (1.0, 2.0, 0.5, None),
+        (2.0, 1.0, 0.1, 1.5),
+        (0.1, 5.0, 2.0, None),
+    ]
+    for v, mu, y, w in cases:
+        w_eff = 1.0 if w is None else w
+
+        def obj_eta(
+            eta: float, _v: float = v, _mu: float = mu, _y: float = y, _w: float = w_eff
+        ) -> float:
+            if eta <= 0.0:
+                return float("inf")
+            return (
+                0.5 * _w * _y * eta
+                - _w * np.sqrt(eta)
+                + 0.5 * _mu * (eta - _v) * (eta - _v)
+            )
+
+        eta_ref = float(
+            minimize_scalar(obj_eta, bounds=(1e-12, 1e6), method="bounded").x
+        )
+        xx = [v, mu, y] if w is None else [v, mu, y, w]
+        eta_solver = po._prox_inv_gaussian_reciprocal_squared_scalar(xx)
+        np.testing.assert_allclose(eta_solver, eta_ref, rtol=1e-3, atol=1e-3)

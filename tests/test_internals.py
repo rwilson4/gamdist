@@ -151,8 +151,6 @@ def test_poisson_overdispersion_caches_dispersion() -> None:
     [
         ("identity", "normal"),
         ("logistic", "binomial"),
-        ("probit", "binomial"),
-        ("complementary_log_log", "binomial"),
         ("log", "poisson"),
         # gamma + reciprocal does not constrain mu > 0 and is numerically
         # unstable on small synthetic data; covered by the gamma fit test.
@@ -160,7 +158,12 @@ def test_poisson_overdispersion_caches_dispersion() -> None:
     ],
 )
 def test_link_function_round_trip(link: str, family: str, tmp_path: Path) -> None:
-    """Each link type can be saved and re-loaded with its eval_link/eval_inv_link."""
+    """Each canonical link type can be saved and re-loaded with its
+    eval_link/eval_inv_link.
+
+    Non-canonical (family, link) pairs are rejected at construction
+    (see ``test_unsupported_family_link_raises``), so this round-trip
+    only covers the supported canonical pairs."""
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:

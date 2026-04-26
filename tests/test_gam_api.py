@@ -27,6 +27,42 @@ def test_unknown_link_raises() -> None:
         GAM(family="normal", link="not_a_link")  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "family,link",
+    [
+        # Previously routed through the scipy.optimize.minimize_scalar
+        # fallback in proximal_operators.py; non-convex / no real prox.
+        ("normal", "log"),
+        ("normal", "logistic"),
+        ("binomial", "probit"),
+        ("binomial", "complementary_log_log"),
+        ("poisson", "identity"),
+        ("gamma", "log"),
+        ("gamma", "identity"),
+        ("inverse_gaussian", "log"),
+    ],
+)
+def test_unsupported_family_link_raises(family: str, link: str) -> None:
+    """Non-canonical (family, link) pairs without a dedicated convex prox
+    are rejected at construction."""
+    with pytest.raises(ValueError, match=r"supported.*family.*link.*combination"):
+        GAM(family=family, link=link)  # type: ignore[arg-type]
+
+
+def test_unsupported_family_link_message_points_to_canonical() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        GAM(family="binomial", link="probit")
+    msg = str(exc_info.value)
+    assert "logistic" in msg  # canonical link for binomial
+    assert "binomial" in msg
+
+
+def test_exponential_with_non_canonical_link_rejected() -> None:
+    """Exponential collapses to gamma; a non-reciprocal link is then rejected."""
+    with pytest.raises(ValueError, match=r"supported.*combination"):
+        GAM(family="exponential", link="log")
+
+
 def test_unknown_feature_type_raises() -> None:
     mdl = GAM(family="normal")
     with pytest.raises(ValueError, match="not supported"):
