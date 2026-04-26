@@ -90,6 +90,6 @@ def test_dof_and_num_params() -> None:
     assert feat.dof() == 1.0
 
 
-def test_l1_regularization_rejected() -> None:
-    with pytest.raises(ValueError, match="L1 regularization on linear features"):
-        _LinearFeature(name="x", regularization={"l1": {"coef": 1.0}})
+def test_l1_regularization_no_coef_raises() -> None:
+    with pytest.raises(ValueError, match="No coefficient specified for l1"):
+        _LinearFeature(name="x", regularization={"l1": {}})

@@ -55,15 +55,17 @@ class _LinearFeature(_Feature):
         transform : callable
             Transformation applied to the data (e.g. ``np.log1p``).
         regularization : dict
-            Description of regularization terms. ``l2`` (ridge) takes
-            ``{"coef": λ}`` and adds ``λ · m²`` to the objective.
-            ``group_lasso`` takes ``{"coef": λ}`` and adds
-            ``λ · ‖f_j‖₂ = λ · |m| · √(xᵀx)`` to the objective, which
-            zeros out the entire feature once ``λ`` is large enough.
-            The top-level ``prior`` key (if present) provides a scalar
-            prior estimate for the slope. ``l1`` is not yet implemented
-            for this feature type — see issue #53; for L1 today, use a
-            categorical feature.
+            Description of regularization terms. ``l1`` takes
+            ``{"coef": λ}`` and adds ``λ · |m|`` to the objective,
+            shrinking the slope toward zero with a closed-form 1-D
+            soft-threshold. ``l2`` (ridge) takes ``{"coef": λ}`` and
+            adds ``λ · m²`` to the objective. ``group_lasso`` takes
+            ``{"coef": λ}`` and adds ``λ · ‖f_j‖₂ = λ · |m| · √(xᵀx)``
+            to the objective, which zeros out the entire feature once
+            ``λ`` is large enough. ``l1`` and ``group_lasso`` combine
+            additively in the soft-threshold and stack with ``l2``
+            (elastic net). The top-level ``prior`` key (if present)
+            provides a scalar prior estimate for the slope.
         load_from_file : str
             If provided, restore parameters from this pickle path. All
             other parameters are ignored when loading.
@@ -100,11 +102,13 @@ class _LinearFeature(_Feature):
 
         if regularization is not None:
             if "l1" in regularization:
-                raise ValueError(
-                    "L1 regularization on linear features is not implemented "
-                    "(see issue #53). Use a categorical feature for L1 today, "
-                    "or restrict this feature's regularization to 'l2'."
-                )
+                self._has_l1 = True
+                if "coef" in regularization["l1"]:
+                    self._coef1 = float(regularization["l1"]["coef"])
+                else:
+                    raise ValueError(
+                        "No coefficient specified for l1 regularization term."
+                    )
 
             if "l2" in regularization:
                 self._has_l2 = True
@@ -291,11 +295,18 @@ class _LinearFeature(_Feature):
 
         b = float(self._x.dot(y))
 
+        # L1 (lambda1 * |m|) and group-lasso (lambda_gl * |m| * sqrt(xtx))
+        # both contribute additively to a 1-D soft-threshold on `b`. With
+        # ridge present, the shrinkage is the elastic-net closed form:
+        # m = sign(b) * max(|b| - threshold, 0) / denom, and m = 0 when
+        # |b| <= threshold.
+        threshold = 0.0
+        if self._has_l1:
+            threshold += self._lambda1 / rho
         if self._has_group_lasso:
-            # Group lasso on the per-feature contribution f_j = m * x_centered.
-            # ||f_j||_2 = |m| * sqrt(xtx), so the penalty contributes a
-            # 1-D soft-threshold on `b` with threshold lambda_gl/rho * sqrt(xtx).
-            threshold = self._lambda_group_lasso * math.sqrt(self._xtx) / rho
+            threshold += self._lambda_group_lasso * math.sqrt(self._xtx) / rho
+
+        if threshold > 0.0:
             if b > threshold:
                 self._m = (b - threshold) / denom
             elif b < -threshold:
