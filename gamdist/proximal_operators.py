@@ -392,6 +392,45 @@ def _prox_inv_gaussian(
     )
 
 
+def _prox_huber_identity(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    delta: float,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    r"""Proximal operator for the Huber loss with identity link.
+
+    Solves, elementwise,
+        argmin_x  w * L_delta(y - x) + (mu/2) * (x - v)^2
+    where ``L_delta(r) = 0.5 r^2`` for ``|r| <= delta`` and
+    ``L_delta(r) = delta * (|r| - 0.5*delta)`` for ``|r| > delta`` is the
+    Huber loss with knee ``delta > 0``. The minimum has a closed form:
+    a clipped weighted-mean shrinkage, with the linear-region branches
+    saturating at ``v +/- w*delta/mu``.
+        x* = v + w*delta/mu                 if y - v >   delta*(mu+w)/mu
+        x* = v - w*delta/mu                 if y - v <  -delta*(mu+w)/mu
+        x* = (w*y + mu*v) / (w + mu)        otherwise.
+    Reduces to the normal-identity prox in the inner (quadratic) region
+    and to a soft-threshold-style clip in the outer (linear) region;
+    bounded influence is what makes Huber robust to outliers.
+    """
+    if w is None:
+        threshold: FloatArray | float = delta * (1.0 + mu) / mu
+        upper = v + delta / mu
+        lower = v - delta / mu
+        quad = (y + mu * v) / (1.0 + mu)
+    else:
+        threshold = delta * (w + mu) / mu
+        upper = v + (w * delta) / mu
+        lower = v - (w * delta) / mu
+        quad = (w * y + mu * v) / (w + mu)
+    diff = y - v
+    return np.where(diff > threshold, upper, np.where(diff < -threshold, lower, quad))
+
+
 def _prox_quantile_identity(
     v: FloatArray,
     mu: float,
