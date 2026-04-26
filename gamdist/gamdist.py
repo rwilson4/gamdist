@@ -543,10 +543,11 @@ class GAM:
         regularization : dictionary or None
              Dictionary specifying the regularization applied to this feature.
              Different types of features support different types of regularization.
-             Splines implicitly only support regularization of the wiggliness
-             via a C2 smoothness penalty. That is controlled via the rel_dof.
-             Other features have more diverse options described in their own
-             documentation.
+             Splines always include a C2 smoothness penalty controlled via
+             ``rel_dof``; ``regularization={"group_lasso": {"coef": λ}}``
+             additionally shrinks the entire spline contribution and can
+             zero it out. Other features have more diverse options
+             described in their own documentation.
 
         Returns
         -------
@@ -559,7 +560,12 @@ class GAM:
         elif type == "linear":
             f = _LinearFeature(name, transform, regularization=regularization)
         elif type == "spline":
-            f = _SplineFeature(name, transform, rel_dof if rel_dof is not None else 4.0)
+            f = _SplineFeature(
+                name,
+                transform,
+                rel_dof if rel_dof is not None else 4.0,
+                regularization=regularization,
+            )
         else:
             raise ValueError(f"Features of type {type} not supported.")
 

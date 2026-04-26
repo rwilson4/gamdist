@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import math
 import pickle
 from collections.abc import Callable
 from typing import Any
@@ -54,12 +55,14 @@ class _LinearFeature(_Feature):
         transform : callable
             Transformation applied to the data (e.g. ``np.log1p``).
         regularization : dict
-            Description of regularization terms. Currently only ``l2``
-            (ridge) is supported on linear features; the entry's value
-            is a dict containing a numeric ``coef``. The top-level
-            ``prior`` key (if present) provides a scalar prior estimate
-            for the slope. ``l1`` is not yet implemented for this
-            feature type — see issue #53; for L1 today, use a
+            Description of regularization terms. ``l2`` (ridge) takes
+            ``{"coef": λ}`` and adds ``λ · m²`` to the objective.
+            ``group_lasso`` takes ``{"coef": λ}`` and adds
+            ``λ · ‖f_j‖₂ = λ · |m| · √(xᵀx)`` to the objective, which
+            zeros out the entire feature once ``λ`` is large enough.
+            The top-level ``prior`` key (if present) provides a scalar
+            prior estimate for the slope. ``l1`` is not yet implemented
+            for this feature type — see issue #53; for L1 today, use a
             categorical feature.
         load_from_file : str
             If provided, restore parameters from this pickle path. All
@@ -85,11 +88,14 @@ class _LinearFeature(_Feature):
 
         self._has_l1 = False
         self._has_l2 = False
+        self._has_group_lasso = False
         self._has_prior = False
         self._coef1: float = 0.0
         self._coef2: float = 0.0
         self._lambda1: float = 0.0
         self._lambda2: float = 0.0
+        self._coef_group_lasso: float = 0.0
+        self._lambda_group_lasso: float = 0.0
         self._prior: float = 0.0
 
         if regularization is not None:
@@ -107,6 +113,17 @@ class _LinearFeature(_Feature):
                 else:
                     raise ValueError(
                         "No coefficient specified for l2 regularization term."
+                    )
+
+            if "group_lasso" in regularization:
+                self._has_group_lasso = True
+                if "coef" in regularization["group_lasso"]:
+                    self._coef_group_lasso = float(
+                        regularization["group_lasso"]["coef"]
+                    )
+                else:
+                    raise ValueError(
+                        "No coefficient specified for group_lasso regularization term."
                     )
 
             if self._has_l1 or self._has_l2:
@@ -159,6 +176,8 @@ class _LinearFeature(_Feature):
             self._lambda1 = self._coef1 * smoothing
         if self._has_l2:
             self._lambda2 = self._coef2 * smoothing
+        if self._has_group_lasso:
+            self._lambda_group_lasso = self._coef_group_lasso * smoothing
 
         self._verbose = verbose
         if save_flag:
@@ -179,6 +198,7 @@ class _LinearFeature(_Feature):
             "has_transform": self._has_transform,
             "has_l1": self._has_l1,
             "has_l2": self._has_l2,
+            "has_group_lasso": self._has_group_lasso,
             "has_prior": self._has_prior,
             "verbose": self._verbose,
             "name": self._name,
@@ -197,6 +217,9 @@ class _LinearFeature(_Feature):
         if self._has_l2:
             mv["coef2"] = self._coef2
             mv["lambda2"] = self._lambda2
+        if self._has_group_lasso:
+            mv["coef_group_lasso"] = self._coef_group_lasso
+            mv["lambda_group_lasso"] = self._lambda_group_lasso
         if self._has_prior:
             mv["prior"] = self._prior
 
@@ -222,6 +245,14 @@ class _LinearFeature(_Feature):
         if self._has_l2:
             self._coef2 = mv["coef2"]
             self._lambda2 = mv["lambda2"]
+        # has_group_lasso added later; default to False for older pickles.
+        self._has_group_lasso = mv.get("has_group_lasso", False)
+        if self._has_group_lasso:
+            self._coef_group_lasso = mv["coef_group_lasso"]
+            self._lambda_group_lasso = mv["lambda_group_lasso"]
+        else:
+            self._coef_group_lasso = 0.0
+            self._lambda_group_lasso = 0.0
         self._has_prior = mv["has_prior"]
         if self._has_prior:
             self._prior = mv["prior"]
@@ -258,7 +289,22 @@ class _LinearFeature(_Feature):
         else:
             denom = self._xtx
 
-        self._m = float(self._x.dot(y) / denom)
+        b = float(self._x.dot(y))
+
+        if self._has_group_lasso:
+            # Group lasso on the per-feature contribution f_j = m * x_centered.
+            # ||f_j||_2 = |m| * sqrt(xtx), so the penalty contributes a
+            # 1-D soft-threshold on `b` with threshold lambda_gl/rho * sqrt(xtx).
+            threshold = self._lambda_group_lasso * math.sqrt(self._xtx) / rho
+            if b > threshold:
+                self._m = (b - threshold) / denom
+            elif b < -threshold:
+                self._m = (b + threshold) / denom
+            else:
+                self._m = 0.0
+        else:
+            self._m = b / denom
+
         self._b = -self._m * self._xmean
 
         if self._save_self:

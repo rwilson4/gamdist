@@ -1,3 +1,26 @@
+2026-04-26 : Group lasso for linear and spline features
+- _LinearFeature and _SplineFeature now accept
+      regularization={"group_lasso": {"coef": lambda}}
+  matching the categorical-feature pattern added 2026-04-25.
+- Linear: penalty is lambda * ||f_j||_2 = lambda * |m| * sqrt(xtx),
+  which reduces to a 1-D soft-threshold on the slope. Implemented
+  closed-form inside _LinearFeature.optimize alongside the existing
+  ridge solve; no cvxpy dependency added on this path.
+- Spline: penalty is lambda * ||N theta||_2. Group lasso is non-
+  smooth at the origin and breaks the Cholesky-based fast path, so
+  _SplineFeature.optimize routes through cvxpy (CLARABEL) when the
+  regularizer is active and keeps the existing closed-form path
+  otherwise. _SplineFeature.__init__ gains a `regularization` kwarg
+  threaded through GAM.add_feature.
+- Save / load plumbing parallels the categorical implementation;
+  older pickles continue to load (has_group_lasso defaults to False).
+- New tests in tests/test_linear_group_lasso.py and
+  tests/test_spline_group_lasso.py mirror the categorical
+  group-lasso suite: smoothing scaling, soft-threshold closed form,
+  zero-coef matches unpenalized, large-coef zeros the contribution,
+  save/load round-trip, and an end-to-end GAM test where the noise
+  feature shrinks heavily relative to the signal feature. Closes #44.
+
 2026-04-26 : Adopt ruff format
 - Wire `ruff format` in as the project's formatter. `[tool.ruff]`
   line-length drops from 100 to 88 (ruff format / black default) and
