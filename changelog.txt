@@ -1,3 +1,11 @@
+2026-04-26 : Persist network_lasso edges DataFrame across save/load
+- _CategoricalFeature._save now stores the original edges DataFrame
+  alongside the derived difference matrix D, and _load restores it.
+  Older pickles only stored D and silently dropped self._edges; loaded
+  models now keep the adjacency for inspection or re-fitting. Older
+  pickles without the new key continue to load (D-only path), matching
+  the same older-pickle handling used for has_group_lasso. Closes #43.
+
 2026-04-26 : Validate weights and covariate_class_sizes lengths in fit()
 - GAM.fit() now raises ValueError immediately if `weights` or
   `covariate_class_sizes`, when provided, do not match len(y). Previously
