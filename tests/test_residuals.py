@@ -123,8 +123,8 @@ def test_anscombe_poisson_matches_formula() -> None:
     mdl.fit(X, y, max_its=30)
 
     mu = mdl._eval_inv_link(mdl._num_features * mdl.f_bar)
-    expected = 1.5 * (y ** (2 / 3) - mu ** (2 / 3)) / mu ** (1 / 6) / np.sqrt(
-        mdl.dispersion()
+    expected = (
+        1.5 * (y ** (2 / 3) - mu ** (2 / 3)) / mu ** (1 / 6) / np.sqrt(mdl.dispersion())
     )
     np.testing.assert_allclose(mdl.residuals("anscombe"), expected, rtol=1e-10)
 

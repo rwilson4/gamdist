@@ -187,9 +187,7 @@ def _make_multi_feature_data(n: int = 200, seed: int = 0):
     y = (
         0.5 * X["x1"].values
         + 2.0 * X["x2"].values
-        + np.where(
-            X["g"].values == "a", 0.3, np.where(X["g"].values == "b", -0.1, 0.2)
-        )
+        + np.where(X["g"].values == "a", 0.3, np.where(X["g"].values == "b", -0.1, 0.2))
         + rng.normal(size=n) * 0.1
     )
     return X, y

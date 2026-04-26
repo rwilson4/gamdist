@@ -26,6 +26,7 @@ Use [uv](https://github.com/astral-sh/uv):
 ```bash
 uv sync                  # runtime deps
 uv sync --extra dev      # adds pytest, mypy, ruff
+uv run ruff format gamdist tests       # apply formatting (or --check to verify)
 uv run pytest            # 96-test suite, ~7s
 ```
 
@@ -50,7 +51,7 @@ The categorical-feature LP/QP uses CLARABEL by default (ECOS is no longer bundle
 
 ## Tests / CI
 
-`pytest` suite is 96 tests, 84% line coverage. CI (`.github/workflows/ci.yml`) runs `ruff check`, `mypy gamdist`, and `pytest --cov=gamdist --cov-fail-under=80` on Python 3.11 and 3.12. Lint/type config lives in `pyproject.toml`.
+`pytest` suite is 96 tests, 84% line coverage. CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `mypy gamdist`, and `pytest --cov=gamdist --cov-fail-under=80` on Python 3.11 and 3.12. Lint/format/type config lives in `pyproject.toml` (`ruff format` is configured with the default 88-char line length).
 
 `GAM.confidence_intervals()` is an intentional `NotImplementedError` stub (and tested as such); the corresponding entry on the to-do list at the top of `gamdist/gamdist.py` is still open.
 

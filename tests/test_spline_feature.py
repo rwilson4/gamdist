@@ -70,9 +70,7 @@ def test_save_load_round_trip(tmp_path: Path) -> None:
     rng = np.random.default_rng(0)
     x = rng.uniform(0.0, 1.0, size=100)
     feat = _SplineFeature(name="x", rel_dof=4.0)
-    feat.initialize(
-        x, save_flag=True, save_prefix=str(tmp_path / "model")
-    )
+    feat.initialize(x, save_flag=True, save_prefix=str(tmp_path / "model"))
     feat._theta = np.linspace(0.0, 1.0, len(feat._theta))
     feat._save()
 

@@ -99,28 +99,74 @@ def generate_covariate_class_data(
 ) -> tuple[pd.DataFrame, FloatArray, FloatArray]:
     rng = np.random.default_rng(seed)
     genders = [
-        "male", "female", "male", "female", "male", "female",
-        "male", "female", "male", "female", "male", "female",
-        "male", "female", "male", "female", "male",
+        "male",
+        "female",
+        "male",
+        "female",
+        "male",
+        "female",
+        "male",
+        "female",
+        "male",
+        "female",
+        "male",
+        "female",
+        "male",
+        "female",
+        "male",
+        "female",
+        "male",
     ]
     countries = [
-        "usa", "usa", "gbr", "gbr", "can", "can",
-        "usa", "usa", "gbr", "gbr", "can", "can",
-        "usa", "usa", "gbr", "gbr", "can",
+        "usa",
+        "usa",
+        "gbr",
+        "gbr",
+        "can",
+        "can",
+        "usa",
+        "usa",
+        "gbr",
+        "gbr",
+        "can",
+        "can",
+        "usa",
+        "usa",
+        "gbr",
+        "gbr",
+        "can",
     ]
     X = pd.DataFrame({"gender": genders, "country": countries})
     ccs = np.array(
         [
-            1000, 1400, 2200, 1300, 3200, 1700,
-            500, 1700, 1400, 800, 2600, 1200,
-            1600, 900, 400, 1600, 1200,
+            1000,
+            1400,
+            2200,
+            1300,
+            3200,
+            1700,
+            500,
+            1700,
+            1400,
+            800,
+            2600,
+            1200,
+            1600,
+            900,
+            400,
+            1600,
+            1200,
         ],
         dtype=float,
     )
     gmu = gmu_gender(X["gender"].values) + np.where(
-        X["country"].values == "usa", -0.2,
-        np.where(X["country"].values == "can", 0.3,
-                 np.where(X["country"].values == "gbr", 0.4, 0.0)),
+        X["country"].values == "usa",
+        -0.2,
+        np.where(
+            X["country"].values == "can",
+            0.3,
+            np.where(X["country"].values == "gbr", 0.4, 0.0),
+        ),
     )
     mu = _logit_inv_link(gmu)
     if return_mean:
@@ -128,7 +174,9 @@ def generate_covariate_class_data(
     return X, _binomial_family(rng, mu, ccs.astype(int)), ccs
 
 
-def generate_spline_data(num_obs: int, seed: int = 5) -> tuple[pd.DataFrame, FloatArray]:
+def generate_spline_data(
+    num_obs: int, seed: int = 5
+) -> tuple[pd.DataFrame, FloatArray]:
     rng = np.random.default_rng(seed)
     X = pd.DataFrame({"hft": rng.random(size=num_obs)})
     gmu = gmu_hft(X["hft"].values.astype(float))
@@ -147,7 +195,9 @@ def linear_test_data() -> tuple[pd.DataFrame, FloatArray]:
 
 @pytest.fixture
 def logistic_data() -> tuple[pd.DataFrame, FloatArray]:
-    return generate_data(400, seed=7, link=_logit_inv_link, family=_binomial_family_wrapper)
+    return generate_data(
+        400, seed=7, link=_logit_inv_link, family=_binomial_family_wrapper
+    )
 
 
 @pytest.fixture

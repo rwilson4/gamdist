@@ -153,13 +153,22 @@ def test_prox_inv_gaussian_reciprocal_squared_matches_eta_minimization() -> None
     ]
     for v, mu, y, w in cases:
         w_eff = 1.0 if w is None else w
+
         # Convex-in-eta objective.
-        def obj_eta(eta: float, _v: float = v, _mu: float = mu, _y: float = y, _w: float = w_eff) -> float:
+        def obj_eta(
+            eta: float, _v: float = v, _mu: float = mu, _y: float = y, _w: float = w_eff
+        ) -> float:
             if eta <= 0.0:
                 return float("inf")
-            return 0.5 * _w * _y * eta - _w * np.sqrt(eta) + 0.5 * _mu * (eta - _v) * (eta - _v)
+            return (
+                0.5 * _w * _y * eta
+                - _w * np.sqrt(eta)
+                + 0.5 * _mu * (eta - _v) * (eta - _v)
+            )
 
-        eta_ref = float(minimize_scalar(obj_eta, bounds=(1e-12, 1e6), method="bounded").x)
+        eta_ref = float(
+            minimize_scalar(obj_eta, bounds=(1e-12, 1e6), method="bounded").x
+        )
         xx = [v, mu, y] if w is None else [v, mu, y, w]
         eta_solver = po._prox_inv_gaussian_reciprocal_squared_scalar(xx)
         np.testing.assert_allclose(eta_solver, eta_ref, rtol=1e-3, atol=1e-3)
