@@ -1,3 +1,54 @@
+2026-04-26 : Reject l1 regularization on linear features
+- _LinearFeature.__init__ now raises ValueError if the user passes
+  regularization={"l1": ...}. The L1 coefficient was previously stored
+  but silently dropped in optimize() — users got a plain ridge / no-
+  penalty fit and no warning. The error message points at the
+  categorical-feature L1 path for users who need L1 today, and at
+  issue #53 for the follow-up that will implement L1 properly on
+  linear features. Closes #20.
+
+2026-04-26 : Damped Newton fallback for inv_gaussian + reciprocal_squared prox
+- _prox_inv_gaussian_reciprocal_squared_scalar previously raised
+  ValueError when undamped Newton failed to converge in 100 iterations,
+  inconsistent with the binomial / poisson canonical-link solvers which
+  fall back to scipy.optimize.minimize_scalar. The prox is convex in
+  eta = z^2 but not in z, so the Newton step in z is not always a
+  descent direction. Now uses damped Newton with backtracking on the
+  objective (matching _prox_binomial_logit_scalar) and falls through to
+  minimize_scalar if Newton can't make progress. Closes #42.
+
+2026-04-26 : Rename network_lasso edge columns country1/country2 to node1/node2
+- _CategoricalFeature now expects the edges DataFrame for
+  regularization={"network_lasso": {"edges": ...}} to use the
+  domain-neutral column names "node1" and "node2" (with the existing
+  optional "weight"). The previous names hardcoded a country-pairs
+  use case into a generic feature class. Clean rename, no backwards-
+  compat path for the old names — callers with country-keyed edges
+  need a one-line update. README example and tests updated.
+  Closes #37.
+
+2026-04-26 : Persist network_lasso edges DataFrame across save/load
+- _CategoricalFeature._save now stores the original edges DataFrame
+  alongside the derived difference matrix D, and _load restores it.
+  Older pickles only stored D and silently dropped self._edges; loaded
+  models now keep the adjacency for inspection or re-fitting. Older
+  pickles without the new key continue to load (D-only path), matching
+  the same older-pickle handling used for has_group_lasso. Closes #43.
+
+2026-04-26 : Validate weights and covariate_class_sizes lengths in fit()
+- GAM.fit() now raises ValueError immediately if `weights` or
+  `covariate_class_sizes`, when provided, do not match len(y). Previously
+  the mismatch propagated as a confusing broadcasting failure deep
+  inside deviance computation. Closes #40.
+
+2026-04-26 : Replace assert with raise in proximal-operator validation
+- _prox_normal, _prox_binomial, _prox_poisson, _prox_gamma, and
+  _prox_inv_gaussian previously used `assert inv_link is not None` to
+  validate the required inv_link argument. Under `python -O` assertions
+  are stripped, which would let a None inv_link propagate as a less-
+  clear TypeError deeper in the call. Now raises ValueError with a
+  clear message in all five locations. Closes #41.
+
 2026-04-25 : Group lasso for categorical features
 - _CategoricalFeature now accepts
       regularization={"group_lasso": {"coef": lambda}}

@@ -111,10 +111,10 @@ class _CategoricalFeature(_Feature):
                     self._edges = regularization["network_lasso"]["edges"]
                     self._num_edges, _ = self._edges.shape
                     for _, row in self._edges.iterrows():
-                        if row["country1"] not in self._categories:
-                            self._categories.append(row["country1"])
-                        if row["country2"] not in self._categories:
-                            self._categories.append(row["country2"])
+                        if row["node1"] not in self._categories:
+                            self._categories.append(row["node1"])
+                        if row["node2"] not in self._categories:
+                            self._categories.append(row["node2"])
                 else:
                     raise ValueError(
                         "Edges not specified for Network Lasso regularization term."
@@ -158,8 +158,8 @@ class _CategoricalFeature(_Feature):
             _, em = self._edges.shape
             ir = 0
             for _, row in self._edges.iterrows():
-                i = self._category_hash[row["country1"]]
-                j = self._category_hash[row["country2"]]
+                i = self._category_hash[row["node1"]]
+                j = self._category_hash[row["node2"]]
                 lmbda = float(row["weight"]) if em >= 3 else 1.0
                 D[ir, i] = lmbda
                 D[ir, j] = -lmbda
@@ -272,6 +272,7 @@ class _CategoricalFeature(_Feature):
         if self._has_network_lasso:
             mv["num_edges"] = self._num_edges
             mv["D"] = self._D
+            mv["edges"] = self._edges
             mv["lambda_network_lasso"] = self._lambda_network_lasso
         if self._has_group_lasso:
             mv["lambda_group_lasso"] = self._lambda_group_lasso
@@ -303,6 +304,9 @@ class _CategoricalFeature(_Feature):
         if self._has_network_lasso:
             self._num_edges = mv["num_edges"]
             self._D = mv["D"]
+            # `edges` was not always persisted; older pickles only stored D.
+            if "edges" in mv:
+                self._edges = mv["edges"]
             self._lambda_network_lasso = mv["lambda_network_lasso"]
         # has_group_lasso was added later; default to False for older pickles.
         self._has_group_lasso = mv.get("has_group_lasso", False)
