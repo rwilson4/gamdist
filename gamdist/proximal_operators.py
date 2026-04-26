@@ -303,47 +303,40 @@ def _prox_gamma(
 
 
 def _prox_inv_gaussian_reciprocal_squared_scalar(xx: Sequence[float]) -> float:
-    v = xx[0]
-    mu = xx[1]
-    y = xx[2]
-    w: float | None = xx[3] if len(xx) >= 4 else None
+    v = float(xx[0])
+    mu = float(xx[1])
+    y = float(xx[2])
+    w_eff = float(xx[3]) if len(xx) >= 4 else 1.0
 
-    w_eff = 1.0 if w is None else float(w)
-
-    def obj(z: float) -> float:
-        eta = z * z
-        return 0.5 * w_eff * y * eta - w_eff * z + 0.5 * mu * (eta - v) * (eta - v)
-
+    # Parameterize in eta = z^2, the natural convex coordinate:
+    #   F(eta)   = 0.5*w*y*eta - w*sqrt(eta) + 0.5*mu*(eta - v)^2
+    #   F'(eta)  = 0.5*w*y - 0.5*w/sqrt(eta) + mu*(eta - v)
+    #   F''(eta) = 0.25*w*eta^(-3/2) + mu  > 0  for w, mu, eta > 0,
+    # so Newton from any positive eta converges monotonically. The only
+    # safeguard needed is to keep eta strictly positive across steps.
     tol = 1e-3
     max_its = 100
 
-    z = 1.0
-    w_y_minus_mu_v = 0.5 * w_eff * y - mu * v
-
+    eta = 1.0
     for _ in range(max_its):
-        num = mu * z * z * z + w_y_minus_mu_v * z - 0.5 * w_eff
-        denom = 3 * mu * z * z + w_y_minus_mu_v
-
-        dz = num / denom
-        if abs(dz) < tol:
-            return z * z
-        # Damped Newton: backtrack until the objective decreases. The prox is
-        # convex in eta = z^2 but not in z, so the Newton step in z is not
-        # always a descent direction; if backtracking can't find one we fall
-        # through to the bracketed minimization below.
-        f_curr = obj(z)
+        sqrt_eta = np.sqrt(eta)
+        grad = 0.5 * w_eff * y - 0.5 * w_eff / sqrt_eta + mu * (eta - v)
+        hess = 0.25 * w_eff / (eta * sqrt_eta) + mu
+        deta = grad / hess
+        if abs(deta) < tol:
+            return eta
+        # If the full Newton step would push eta non-positive, halve it
+        # until it lands in the open positive half-line. The Hessian is
+        # globally positive, so a sufficiently short step in the Newton
+        # direction is always a descent direction.
         step = 1.0
-        z_new = z - dz
-        while obj(z_new) >= f_curr and step > 1e-12:
+        eta_new = eta - deta
+        while eta_new <= 0.0:
             step *= 0.5
-            z_new = z - step * dz
-        z = z_new
+            eta_new = eta - step * deta
+        eta = eta_new
 
-    # Newton failed to converge in max_its; fall back to a bracketed 1-D
-    # minimization, matching the pattern used by the binomial / poisson
-    # canonical-link solvers.
-    z_opt = float(minimize_scalar(obj).x)
-    return z_opt * z_opt
+    raise ValueError("Dual variable update failed to converge.")
 
 
 def _prox_inv_gaussian_reciprocal_squared(

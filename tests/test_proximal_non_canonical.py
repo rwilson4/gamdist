@@ -126,8 +126,8 @@ def test_prox_inv_gaussian_reciprocal_squared_with_weights() -> None:
 
 
 def test_prox_inv_gaussian_reciprocal_squared_robust_across_grid() -> None:
-    """Damped Newton + minimize_scalar fallback should never raise on a
-    representative input grid; the previous undamped Newton could crash with
+    """The eta-space Newton solver should never raise on a representative
+    input grid; the previous undamped z-space Newton could crash with
     'Dual variable update failed to converge.' on harder inputs."""
     grid_v = [0.01, 0.1, 1.0, 10.0, 100.0]
     grid_mu = [0.1, 1.0, 10.0]
