@@ -2,6 +2,19 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Design philosophy (North Star)
+
+gamdist exists to fit the **zoo** of supervised-learning models that fall under the GLM/GAM umbrella: binary, continuous, or count outcomes paired with continuous, categorical, or spline-transformed features, with arbitrary regularization (ridge, l1, group lasso, curvature penalties, …) attached to whichever terms want it.
+
+Every such model is a single convex optimization problem — but the joint Hessian is a nightmare to derive and solve as one monolith. ADMM (per Chu, Keshavarz, & Boyd) is what makes the zoo tractable: it splits the problem into a per-feature primal step plus a per-outcome proximal step, coordinated by dual variables. Parallelism is a nice side effect; **the real prize is modularity** — outcomes, features, and regularizers are independent components that mix and match in any combination without anyone needing to know about the others.
+
+Practical consequences for development:
+
+- **Convexity is the constraint that buys us everything.** Non-convex links/families compromise the guarantees ADMM gives us; treat them as second-class (the existing non-canonical fallbacks already are). Don't add features, penalties, or proximal operators that break convexity of the per-component subproblems.
+- **Keep the seams clean.** The `_Feature` interface (`initialize`/`optimize`/`compute_dual_tol`/`num_params`/`dof`/`predict`/`_save`/`_load`) and the `(family, link)` → proximal-operator dispatch are the modular boundaries. New feature types or new outcome distributions should plug in without the other side learning anything new.
+- **New regularizers belong inside a feature's `optimize` step**, not bolted onto the global loop — that's how ADMM keeps them composable.
+- Resist designs that route information across the seams (a feature that needs to know the family, a proximal operator that needs to know which features exist, etc.); if a change seems to require it, flag the tension before implementing.
+
 ## Python version
 
 Requires **Python 3.11+**. Code uses `from __future__ import annotations` and full PEP 484 type hints throughout. The package was modernized from Python 2 in v0.2.0; see `changelog.txt`. There is no `setup.py` — packaging is via `pyproject.toml` (hatchling). Real third-party deps are `numpy`, `scipy`, `matplotlib`, `cvxpy`, `pandas`.
