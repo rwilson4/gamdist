@@ -10,9 +10,9 @@ Every such model is a single convex optimization problem — but the joint Hessi
 
 Practical consequences for development:
 
-- **Convexity is the constraint that buys us everything.** Non-convex links/families compromise the guarantees ADMM gives us; treat them as second-class (the existing non-canonical fallbacks already are). Don't add features, penalties, or proximal operators that break convexity of the per-component subproblems.
+- **Convexity is non-negotiable.** Every per-component subproblem must be convex; non-convex (family, link) combinations and non-convex penalties are not supported. The right behavior is to detect such combinations up front and raise — don't lean on `scipy.optimize.minimize_scalar` or other generic solvers as a way to quietly admit non-convex problems. (The existing non-canonical fallback in `proximal_operators.py` predates this principle and is on the audit list, not a pattern to extend.)
 - **Keep the seams clean.** The `_Feature` interface (`initialize`/`optimize`/`compute_dual_tol`/`num_params`/`dof`/`predict`/`_save`/`_load`) and the `(family, link)` → proximal-operator dispatch are the modular boundaries. New feature types or new outcome distributions should plug in without the other side learning anything new.
-- **New regularizers belong inside a feature's `optimize` step**, not bolted onto the global loop — that's how ADMM keeps them composable.
+- **Regularizers live inside a feature's `optimize` step**, not in the global ADMM loop. `gamdist.py`'s `fit()` / `_optimize` only see `fpumz` and `rho` and never touch a penalty coefficient. Each feature scales its own coefficients by `smoothing` in `initialize()` and adds the penalty to its own subproblem (linear: ridge in the closed-form solve; categorical: L1 / L2 / network-lasso / group-lasso in the cvxpy program; spline: `Omega` curvature folded into the Cholesky factor). New penalties go in the same place.
 - Resist designs that route information across the seams (a feature that needs to know the family, a proximal operator that needs to know which features exist, etc.); if a change seems to require it, flag the tension before implementing.
 
 ## Python version
