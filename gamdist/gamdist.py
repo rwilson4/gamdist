@@ -680,8 +680,11 @@ class GAM:
              Splines always include a C2 smoothness penalty controlled via
              ``rel_dof``; ``regularization={"group_lasso": {"coef": λ}}``
              additionally shrinks the entire spline contribution and can
-             zero it out. Other features have more diverse options
-             described in their own documentation.
+             zero it out. ``group_lasso_inf`` is the L_∞-norm variant
+             (``λ · ‖f_j‖_∞``); it produces a clipping rather than a
+             uniform contraction and is also available on linear and
+             categorical features. Other features have more diverse
+             options described in their own documentation.
 
         Returns
         -------

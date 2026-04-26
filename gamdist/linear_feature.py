@@ -62,7 +62,13 @@ class _LinearFeature(_Feature):
             adds ``λ · m²`` to the objective. ``group_lasso`` takes
             ``{"coef": λ}`` and adds ``λ · ‖f_j‖₂ = λ · |m| · √(xᵀx)``
             to the objective, which zeros out the entire feature once
-            ``λ`` is large enough. ``l1`` and ``group_lasso`` combine
+            ``λ`` is large enough. ``group_lasso_inf`` takes
+            ``{"coef": λ}`` and adds ``λ · ‖f_j‖_∞ = λ · |m| ·
+            max|x - x̄|``, the L_∞-norm variant of the group lasso;
+            on a single-slope feature it has the same zero-the-slope
+            effect as the L2 group lasso, but the threshold scales
+            with the data range rather than its L2 norm. ``l1``,
+            ``group_lasso``, and ``group_lasso_inf`` all combine
             additively in the soft-threshold and stack with ``l2``
             (elastic net). The top-level ``prior`` key (if present)
             provides a scalar prior estimate for the slope.
@@ -91,6 +97,7 @@ class _LinearFeature(_Feature):
         self._has_l1 = False
         self._has_l2 = False
         self._has_group_lasso = False
+        self._has_group_lasso_inf = False
         self._has_prior = False
         self._coef1: float = 0.0
         self._coef2: float = 0.0
@@ -98,6 +105,8 @@ class _LinearFeature(_Feature):
         self._lambda2: float = 0.0
         self._coef_group_lasso: float = 0.0
         self._lambda_group_lasso: float = 0.0
+        self._coef_group_lasso_inf: float = 0.0
+        self._lambda_group_lasso_inf: float = 0.0
         self._prior: float = 0.0
 
         if regularization is not None:
@@ -128,6 +137,17 @@ class _LinearFeature(_Feature):
                 else:
                     raise ValueError(
                         "No coefficient specified for group_lasso regularization term."
+                    )
+
+            if "group_lasso_inf" in regularization:
+                self._has_group_lasso_inf = True
+                if "coef" in regularization["group_lasso_inf"]:
+                    self._coef_group_lasso_inf = float(
+                        regularization["group_lasso_inf"]["coef"]
+                    )
+                else:
+                    raise ValueError(
+                        "No coefficient specified for group_lasso_inf regularization term."
                     )
 
             if self._has_l1 or self._has_l2:
@@ -173,6 +193,7 @@ class _LinearFeature(_Feature):
             self._x = xa - self._xmean
 
         self._xtx: float = float(self._x.dot(self._x))
+        self._x_inf: float = float(np.max(np.abs(self._x))) if self._x.size else 0.0
         self._m: float = 0.0
         self._b: float = 0.0
 
@@ -182,6 +203,8 @@ class _LinearFeature(_Feature):
             self._lambda2 = self._coef2 * smoothing
         if self._has_group_lasso:
             self._lambda_group_lasso = self._coef_group_lasso * smoothing
+        if self._has_group_lasso_inf:
+            self._lambda_group_lasso_inf = self._coef_group_lasso_inf * smoothing
 
         self._verbose = verbose
         if save_flag:
@@ -203,6 +226,7 @@ class _LinearFeature(_Feature):
             "has_l1": self._has_l1,
             "has_l2": self._has_l2,
             "has_group_lasso": self._has_group_lasso,
+            "has_group_lasso_inf": self._has_group_lasso_inf,
             "has_prior": self._has_prior,
             "verbose": self._verbose,
             "name": self._name,
@@ -210,6 +234,7 @@ class _LinearFeature(_Feature):
             "xmean": self._xmean,
             "x": self._x,
             "xtx": self._xtx,
+            "x_inf": self._x_inf,
             "m": self._m,
             "b": self._b,
         }
@@ -224,6 +249,9 @@ class _LinearFeature(_Feature):
         if self._has_group_lasso:
             mv["coef_group_lasso"] = self._coef_group_lasso
             mv["lambda_group_lasso"] = self._lambda_group_lasso
+        if self._has_group_lasso_inf:
+            mv["coef_group_lasso_inf"] = self._coef_group_lasso_inf
+            mv["lambda_group_lasso_inf"] = self._lambda_group_lasso_inf
         if self._has_prior:
             mv["prior"] = self._prior
 
@@ -257,6 +285,14 @@ class _LinearFeature(_Feature):
         else:
             self._coef_group_lasso = 0.0
             self._lambda_group_lasso = 0.0
+        # has_group_lasso_inf added later; default to False for older pickles.
+        self._has_group_lasso_inf = mv.get("has_group_lasso_inf", False)
+        if self._has_group_lasso_inf:
+            self._coef_group_lasso_inf = mv["coef_group_lasso_inf"]
+            self._lambda_group_lasso_inf = mv["lambda_group_lasso_inf"]
+        else:
+            self._coef_group_lasso_inf = 0.0
+            self._lambda_group_lasso_inf = 0.0
         self._has_prior = mv["has_prior"]
         if self._has_prior:
             self._prior = mv["prior"]
@@ -268,6 +304,11 @@ class _LinearFeature(_Feature):
         self._xmean = mv["xmean"]
         self._x = mv["x"]
         self._xtx = mv["xtx"]
+        # x_inf added alongside group_lasso_inf; recover for older pickles.
+        if "x_inf" in mv:
+            self._x_inf = mv["x_inf"]
+        else:
+            self._x_inf = float(np.max(np.abs(self._x))) if self._x.size else 0.0
         self._m = mv["m"]
         self._b = mv["b"]
 
@@ -295,9 +336,11 @@ class _LinearFeature(_Feature):
 
         b = float(self._x.dot(y))
 
-        # L1 (lambda1 * |m|) and group-lasso (lambda_gl * |m| * sqrt(xtx))
-        # both contribute additively to a 1-D soft-threshold on `b`. With
-        # ridge present, the shrinkage is the elastic-net closed form:
+        # L1 (lambda1 * |m|), L2 group lasso (lambda_gl * |m| * sqrt(xtx)),
+        # and L_inf group lasso (lambda_gl_inf * |m| * max|x - xmean|) all
+        # contribute additively to a 1-D soft-threshold on `b` -- they are
+        # each a positive multiple of |m|. With ridge present, the
+        # shrinkage is the elastic-net closed form:
         # m = sign(b) * max(|b| - threshold, 0) / denom, and m = 0 when
         # |b| <= threshold.
         threshold = 0.0
@@ -305,6 +348,8 @@ class _LinearFeature(_Feature):
             threshold += self._lambda1 / rho
         if self._has_group_lasso:
             threshold += self._lambda_group_lasso * math.sqrt(self._xtx) / rho
+        if self._has_group_lasso_inf:
+            threshold += self._lambda_group_lasso_inf * self._x_inf / rho
 
         if threshold > 0.0:
             if b > threshold:
