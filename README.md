@@ -129,6 +129,25 @@ uv run ruff check gamdist tests               # lint
 CI runs all of the above on Python 3.11 and 3.12 (see
 `.github/workflows/ci.yml`).
 
+## Extending gamdist
+
+The modular design means new components plug in along well-defined
+seams without touching the rest of the system:
+
+- **New outcome distribution / link** — add a proximal operator entry
+  in `gamdist/proximal_operators.py` for the `(family, link)` pair.
+  Nothing on the feature side changes.
+- **New feature type** — subclass `_Feature` (see `gamdist/feature.py`)
+  and implement the standard interface (`initialize`, `optimize`,
+  `compute_dual_tol`, `num_params`, `dof`, `predict`, `_save`,
+  `_load`). The ADMM loop in `gamdist.py` doesn't need to know.
+- **New regularizer** — add it inside a feature's `optimize` step
+  (alongside the existing L1 / L2 / group-lasso / network-lasso /
+  curvature terms), scaled by `smoothing` in `initialize`. The global
+  loop never sees a penalty coefficient.
+
+Every per-component subproblem must be convex.
+
 ## Caveats
 
 - The package uses `pickle` for save/load and is **not designed for
