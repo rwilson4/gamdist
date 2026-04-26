@@ -51,6 +51,8 @@ Family = Literal[
     "gamma",
     "exponential",
     "inverse_gaussian",
+    "quasi_binomial",
+    "quasi_poisson",
     "quantile",
     "huber",
 ]
@@ -76,6 +78,8 @@ FAMILIES = [
     "gamma",
     "exponential",
     "inverse_gaussian",
+    "quasi_binomial",
+    "quasi_poisson",
     "quantile",
     "huber",
 ]
@@ -103,8 +107,22 @@ CANONICAL_LINKS = {
     "poisson": "log",
     "gamma": "reciprocal",
     "inverse_gaussian": "reciprocal_squared",
+    "quasi_binomial": "logistic",
+    "quasi_poisson": "log",
     "quantile": "identity",
     "huber": "identity",
+}
+
+# Quasi-likelihood families share the score function (and therefore the
+# per-observation prox, deviance, and variance function) with a "base"
+# full-likelihood family; only the dispersion parameter differs.
+# ``_base_family`` is what the per-observation kernels dispatch on, while
+# ``_family`` keeps the user-facing name so ``dispersion()`` knows
+# whether to estimate phi by Pearson chi-squared / (n - p) instead of
+# fixing it at one.
+QUASI_BASE_FAMILY = {
+    "quasi_binomial": "binomial",
+    "quasi_poisson": "poisson",
 }
 
 # (family, link) pairs that have a real, convex proximal-operator
@@ -282,12 +300,23 @@ class GAM:
                 'poisson' (for counts),
                 'gamma' (still in progress),
                 'inverse_gaussian' (still in progress),
+                'quasi_binomial' (binomial score; dispersion estimated
+                  from the data via Pearson chi-squared / (n - p) so
+                  ``dispersion()`` reflects over- or under-dispersion
+                  relative to the exact-binomial baseline of 1),
+                'quasi_poisson' (Poisson score; same Pearson
+                  dispersion estimator, useful when count data has
+                  variance > mean),
                 'quantile' (pinball loss; requires ``tau``),
                 'huber' (robust M-estimator; requires ``delta``).
              Not currently supported families that could be supported
              include Multinomial models (ordinal and nominal) and
              proportional hazards models. Required unless loading an
-             existing model from file (see load_from_file).
+             existing model from file (see load_from_file). Point
+             estimates for ``quasi_binomial`` / ``quasi_poisson``
+             coincide with their full-likelihood cousins; only the
+             dispersion estimator (and any inferential quantity that
+             depends on it) differs.
          link : str or None (optional)
              Link function associated with the model. Supported link
              functions include:
@@ -360,6 +389,13 @@ class GAM:
             dispersion = 1.0
         else:
             self._family = family
+
+        # quasi_* families share their score function (and therefore the
+        # prox, deviance, and variance function) with a base family; only
+        # the dispersion estimator differs. Per-observation kernels
+        # dispatch on ``_base_family`` so they don't need to learn the
+        # quasi names.
+        self._base_family = QUASI_BASE_FAMILY.get(self._family, self._family)
 
         if link is None:
             self._link = CANONICAL_LINKS[self._family]
@@ -499,6 +535,7 @@ class GAM:
 
         self._filename = filename
         self._family = mv["family"]
+        self._base_family = QUASI_BASE_FAMILY.get(self._family, self._family)
         self._link = mv["link"]
         if (self._family, self._link) not in SUPPORTED_FAMILY_LINK_PAIRS:
             canonical = CANONICAL_LINKS.get(self._family, "<unknown>")
@@ -1032,11 +1069,13 @@ class GAM:
         # Different prox operators have slightly different signatures
         # (the binomial variant takes a covariate-class-sizes argument,
         # quantile / huber take an extra shape parameter), so the
-        # dispatch is typed as Any to keep mypy quiet here.
+        # dispatch is typed as Any to keep mypy quiet here. Quasi
+        # families share the score function with their base family, so
+        # we dispatch on ``_base_family`` here.
         prox: Any
-        if self._family == "normal":
+        if self._base_family == "normal":
             prox = po._prox_normal_identity
-        elif self._family == "binomial":
+        elif self._base_family == "binomial":
             prox = po._prox_binomial_logit
             if self._has_covariate_classes:
                 return (1.0 / N) * prox(
@@ -1047,13 +1086,13 @@ class GAM:
                     self._weights,
                     self._eval_inv_link,
                 )
-        elif self._family == "poisson":
+        elif self._base_family == "poisson":
             prox = po._prox_poisson_log
-        elif self._family == "gamma":
+        elif self._base_family == "gamma":
             prox = po._prox_gamma_reciprocal
-        elif self._family == "inverse_gaussian":
+        elif self._base_family == "inverse_gaussian":
             prox = po._prox_inv_gaussian_reciprocal_squared
-        elif self._family == "quantile":
+        elif self._base_family == "quantile":
             return (1.0 / N) * po._prox_quantile_identity(
                 N * upf,
                 self._rho,
@@ -1061,7 +1100,7 @@ class GAM:
                 self._tau,  # type: ignore[arg-type]
                 w=self._weights,
             )
-        elif self._family == "huber":
+        elif self._base_family == "huber":
             return (1.0 / N) * po._prox_huber_identity(
                 N * upf,
                 self._rho,
@@ -1212,23 +1251,23 @@ class GAM:
         Together they give the sandwich pieces ``X' diag(w) X`` (bread)
         and ``X' diag(s^2) X`` (meat).
         """
-        if self._family == "normal":
+        if self._base_family == "normal":
             v = np.ones_like(mu, dtype=float)
-        elif self._family == "binomial":
+        elif self._base_family == "binomial":
             eps = np.finfo(float).eps
             mu_c = np.clip(mu, eps, 1.0 - eps)
             v = mu_c * (1.0 - mu_c)
-        elif self._family == "poisson":
+        elif self._base_family == "poisson":
             v = mu
-        elif self._family == "gamma":
+        elif self._base_family == "gamma":
             v = mu * mu
-        elif self._family == "inverse_gaussian":
+        elif self._base_family == "inverse_gaussian":
             v = mu * mu * mu
         else:
             raise NotImplementedError(
                 f"robust_covariance does not yet support the {self._family!r} "
                 "family. Supported: normal, binomial, poisson, gamma, "
-                "inverse_gaussian."
+                "inverse_gaussian, quasi_binomial, quasi_poisson."
             )
 
         if self._link == "identity":
@@ -1466,7 +1505,7 @@ class GAM:
             return self._pearson_residuals(y, mu, m)
         if kind == "deviance":
             d_i = self._unit_deviance_for_residuals(y, mu, m)
-            if self._family == "binomial":
+            if self._base_family == "binomial":
                 return np.asarray(np.sign(y - m * mu) * np.sqrt(d_i), dtype=float)
             return np.asarray(np.sign(y - mu) * np.sqrt(d_i), dtype=float)
         if kind == "anscombe":
@@ -1481,18 +1520,18 @@ class GAM:
     ) -> FloatArray:
         """Pearson residuals for each family."""
         phi = self.dispersion()
-        if self._family == "binomial":
+        if self._base_family == "binomial":
             eps = np.finfo(float).eps
             mu_c = np.clip(mu, eps, 1.0 - eps)
             var = m * mu_c * (1.0 - mu_c)
             return np.asarray((y - m * mu_c) / np.sqrt(var * phi), dtype=float)
-        if self._family == "normal":
+        if self._base_family == "normal":
             return np.asarray((y - mu) / np.sqrt(phi), dtype=float)
-        if self._family == "poisson":
+        if self._base_family == "poisson":
             return np.asarray((y - mu) / np.sqrt(mu * phi), dtype=float)
-        if self._family == "gamma":
+        if self._base_family == "gamma":
             return np.asarray((y - mu) / np.sqrt(mu * mu * phi), dtype=float)
-        if self._family == "inverse_gaussian":
+        if self._base_family == "inverse_gaussian":
             return np.asarray((y - mu) / np.sqrt(mu * mu * mu * phi), dtype=float)
         raise ValueError(f"Unsupported family {self._family!r}")
 
@@ -1510,9 +1549,9 @@ class GAM:
         fitting), but ``d_i`` for residuals must include it so that
         ``sqrt(d_i)`` is real and non-negative.
         """
-        if self._family == "normal":
+        if self._base_family == "normal":
             return np.asarray((y - mu) ** 2, dtype=float)
-        if self._family == "binomial":
+        if self._base_family == "binomial":
             eps = np.finfo(float).eps
             mu_c = np.clip(mu, eps, 1.0 - eps)
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -1523,18 +1562,18 @@ class GAM:
                     0.0,
                 )
             return np.maximum(2.0 * (t1 + t2), 0.0)
-        if self._family == "poisson":
+        if self._base_family == "poisson":
             with np.errstate(divide="ignore", invalid="ignore"):
                 t = np.where(y > 0, y * np.log(np.where(y > 0, y, 1.0) / mu), 0.0)
             return np.maximum(2.0 * (t - (y - mu)), 0.0)
-        if self._family == "gamma":
+        if self._base_family == "gamma":
             tiny = np.finfo(float).tiny
             y_safe = np.where(y > 0, y, tiny)
             mu_safe = np.where(mu > 0, mu, tiny)
             return np.maximum(
                 2.0 * (-np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe), 0.0
             )
-        if self._family == "inverse_gaussian":
+        if self._base_family == "inverse_gaussian":
             return np.asarray((y - mu) ** 2 / (mu * mu * y), dtype=float)
         raise ValueError(f"Unsupported family {self._family!r}")
 
@@ -1556,10 +1595,10 @@ class GAM:
         McCullagh & Nelder (1989) Sec 2.4.1 / Table 2.5.
         """
         phi = self.dispersion()
-        if self._family == "normal":
+        if self._base_family == "normal":
             # V(mu) = 1, A(t) = t -- coincides with the Pearson residual.
             return np.asarray((y - mu) / np.sqrt(phi), dtype=float)
-        if self._family == "binomial":
+        if self._base_family == "binomial":
             eps = np.finfo(float).eps
             mu_c = np.clip(mu, eps, 1.0 - eps)
             prop = np.clip(y / m, eps, 1.0 - eps)
@@ -1570,7 +1609,7 @@ class GAM:
             a_mu = scale * special.betainc(2.0 / 3.0, 2.0 / 3.0, mu_c)
             denom = (mu_c * (1.0 - mu_c)) ** (1.0 / 6.0) * np.sqrt(phi)
             return np.asarray(np.sqrt(m) * (a_y - a_mu) / denom, dtype=float)
-        if self._family == "poisson":
+        if self._base_family == "poisson":
             # V(mu) = mu, A(t) = (3/2) t^(2/3).
             return np.asarray(
                 1.5
@@ -1579,7 +1618,7 @@ class GAM:
                 / np.sqrt(phi),
                 dtype=float,
             )
-        if self._family == "gamma":
+        if self._base_family == "gamma":
             # V(mu) = mu^2, A(t) = 3 t^(1/3); V(mu)^(1/6) = mu^(1/3).
             tiny = np.finfo(float).tiny
             y_safe = np.where(y > 0, y, tiny)
@@ -1591,7 +1630,7 @@ class GAM:
                 / np.sqrt(phi),
                 dtype=float,
             )
-        if self._family == "inverse_gaussian":
+        if self._base_family == "inverse_gaussian":
             # V(mu) = mu^3, A(t) = log(t); V(mu)^(1/6) = sqrt(mu).
             return np.asarray((np.log(y) - np.log(mu)) / np.sqrt(mu * phi), dtype=float)
         raise ValueError(f"Unsupported family {self._family!r}")
@@ -1752,12 +1791,12 @@ class GAM:
         w: npt.NDArray[Any] | None = None,
     ) -> float:
         """Compute deviance for given response, mean, optional class sizes and weights."""
-        if self._family == "normal":
+        if self._base_family == "normal":
             y_minus_mu = y - mu
             if w is None:
                 return float(y_minus_mu.dot(y_minus_mu))
             return float(w.dot(y_minus_mu * y_minus_mu))
-        if self._family == "binomial":
+        if self._base_family == "binomial":
             # Clip mu away from 0 and 1 so log(mu) and log1p(-mu) stay finite.
             eps = np.finfo(float).eps
             mu_c = np.clip(mu, eps, 1.0 - eps)
@@ -1766,14 +1805,14 @@ class GAM:
                     -2.0 * np.sum(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c))
                 )
             return float(-2.0 * w.dot(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c)))
-        if self._family == "poisson":
+        if self._base_family == "poisson":
             # `y * log(y / mu)` has the conventional limit 0 when y = 0.
             y_log_term = np.where(y > 0, y * np.log(np.where(y > 0, y, 1.0) / mu), 0.0)
             term = y_log_term - (y - mu)
             if w is None:
                 return float(2.0 * np.sum(term))
             return float(2.0 * w.dot(term))
-        if self._family == "gamma":
+        if self._base_family == "gamma":
             # Gamma deviance is undefined at y = 0 or mu <= 0 in the strict
             # sense; clip both to a tiny positive number to keep training
             # iterations from blowing up when mu transiently goes negative
@@ -1789,11 +1828,11 @@ class GAM:
             return float(
                 2.0 * w.dot(-1.0 * np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe)
             )
-        if self._family == "inverse_gaussian":
+        if self._base_family == "inverse_gaussian":
             if w is None:
                 return float(np.sum((y - mu) * (y - mu) / (mu * mu * y)))
             return float(w.dot((y - mu) * (y - mu) / (mu * mu * y)))
-        if self._family == "quantile":
+        if self._base_family == "quantile":
             # Pinball loss: rho_tau(r) = max(tau*r, (tau-1)*r). The
             # quantile family has no proper likelihood, so "deviance"
             # here is twice the empirical pinball loss -- the
@@ -1805,7 +1844,7 @@ class GAM:
             if w is None:
                 return float(2.0 * np.sum(term))
             return float(2.0 * w.dot(term))
-        if self._family == "huber":
+        if self._base_family == "huber":
             # Huber loss is an M-estimator without a proper likelihood;
             # report 2 * sum(L_delta(y - mu)) so the inner (quadratic)
             # region matches normal-family deviance and the convergence
@@ -1868,6 +1907,22 @@ class GAM:
             if self._estimate_overdispersion:
                 return float(self._poisson_overdispersion())
             return 1.0
+        if self._family == "quasi_poisson":
+            # Quasi-likelihood: same score as Poisson, dispersion phi is
+            # always estimated from data via Pearson chi-squared / (n - p).
+            # The user can still pin phi by passing ``dispersion=`` to
+            # ``GAM(...)``.
+            if self._known_dispersion:
+                return float(self._dispersion)
+            return float(self._poisson_overdispersion())
+        if self._family == "quasi_binomial":
+            # Quasi-likelihood: same score as Binomial, dispersion
+            # estimated by Pearson chi-squared / (n - p) (with the
+            # binomial variance function ``mu * (1 - mu)``, scaled by
+            # ``m`` for covariate-class data).
+            if self._known_dispersion:
+                return float(self._dispersion)
+            return float(self._binomial_pearson_dispersion())
         if self._family == "gamma":
             if self._known_dispersion:
                 return float(self._dispersion)
@@ -2174,6 +2229,40 @@ class GAM:
         res = self._y - mu
         n_minus_p = self._num_obs - self.dof()
         s2 = float(np.sum(res * res / mu_safe) / n_minus_p)
+        self._known_dispersion = True
+        self._dispersion = s2
+        return s2
+
+    def _binomial_pearson_dispersion(self) -> float:
+        r"""Estimate the binomial dispersion as the Pearson chi-square / dof.
+
+        Used by ``family='quasi_binomial'`` and matches the Pearson
+        branch of ``_binomial_overdispersion`` but works for both
+        Bernoulli (no covariate classes) and binomial-counts (with
+        covariate classes) data:
+
+            phi = sum_i (y_i - m_i mu_i)^2 / (m_i mu_i (1 - mu_i))
+                  / (n - p)
+
+        For Bernoulli data ``m_i = 1``. For an exact-binomial fit
+        ``phi`` should be near 1; values markedly larger than 1
+        indicate overdispersion. The estimator is undefined when
+        ``mu_i in {0, 1}``; we clip ``mu_i`` away from those endpoints
+        so transient near-saturation during the ADMM loop does not
+        blow up the denominator.
+        """
+        mu = self._eval_inv_link(self._num_features * self.f_bar)
+        eps = np.finfo(float).eps
+        mu_c = np.clip(mu, eps, 1.0 - eps)
+        if self._has_covariate_classes:
+            m_arr = self._covariate_class_sizes
+            res = self._y - m_arr * mu_c
+            denom = m_arr * mu_c * (1.0 - mu_c)
+        else:
+            res = self._y - mu_c
+            denom = mu_c * (1.0 - mu_c)
+        n_minus_p = self._num_obs - self.dof()
+        s2 = float(np.sum(res * res / denom) / n_minus_p)
         self._known_dispersion = True
         self._dispersion = s2
         return s2
