@@ -390,3 +390,32 @@ def _prox_inv_gaussian(
     return np.array(
         [minimize_scalar(obj_fun_w, args=(v[i], y[i], w[i])).x for i in range(len(v))]
     )
+
+
+def _prox_quantile_identity(
+    v: FloatArray,
+    mu: float,
+    y: FloatArray,
+    tau: float,
+    w: FloatArray | None = None,
+    inv_link: InvLink | None = None,
+    p: Any = None,
+) -> FloatArray:
+    r"""Proximal operator for the pinball / check loss with identity link.
+
+    Solves, elementwise,
+        argmin_x  w * rho_tau(y - x) + (mu/2) * (x - v)^2
+    where ``rho_tau(r) = max(tau * r, (tau - 1) * r)`` is the pinball loss
+    parameterized by quantile level ``tau in (0, 1)``. The minimum is
+    attained in closed form via a shifted soft-threshold:
+        x* = v + w*tau/mu          if y > v + w*tau/mu        (overshoot)
+        x* = v - w*(1-tau)/mu      if y < v - w*(1-tau)/mu    (undershoot)
+        x* = y                     otherwise.
+    """
+    if w is None:
+        upper = v + tau / mu
+        lower = v - (1.0 - tau) / mu
+    else:
+        upper = v + (w * tau) / mu
+        lower = v - (w * (1.0 - tau)) / mu
+    return np.where(y > upper, upper, np.where(y < lower, lower, y))
