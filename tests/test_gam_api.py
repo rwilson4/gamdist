@@ -122,6 +122,26 @@ def test_inconsistent_X_y_lengths_raises() -> None:
         mdl.fit(X, y)
 
 
+def test_fit_weights_wrong_length_raises() -> None:
+    mdl = GAM(family="normal")
+    mdl.add_feature(name="x", type="linear")
+    X = pd.DataFrame({"x": np.arange(10.0)})
+    y = np.arange(10.0)
+    weights = np.ones(5)
+    with pytest.raises(ValueError, match="weights has length"):
+        mdl.fit(X, y, weights=weights)
+
+
+def test_fit_covariate_class_sizes_wrong_length_raises() -> None:
+    mdl = GAM(family="binomial")
+    mdl.add_feature(name="x", type="linear")
+    X = pd.DataFrame({"x": np.arange(10.0)})
+    y = np.arange(10.0)
+    ccs = np.full(7, 10.0)
+    with pytest.raises(ValueError, match="covariate_class_sizes has length"):
+        mdl.fit(X, y, covariate_class_sizes=ccs)
+
+
 def test_summary_prints_features() -> None:
     rng = np.random.default_rng(0)
     n = 100

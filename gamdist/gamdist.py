@@ -673,6 +673,15 @@ class GAM:
 
         if len(X) != len(y):
             raise ValueError('Inconsistent number of observations in X and y.')
+        if weights is not None and len(weights) != len(y):
+            raise ValueError(
+                f'weights has length {len(weights)} but y has length {len(y)}.'
+            )
+        if covariate_class_sizes is not None and len(covariate_class_sizes) != len(y):
+            raise ValueError(
+                f'covariate_class_sizes has length {len(covariate_class_sizes)} '
+                f'but y has length {len(y)}.'
+            )
 
         self._rho = 0.1
         eps_abs = 1e-3

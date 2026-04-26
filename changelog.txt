@@ -1,3 +1,9 @@
+2026-04-26 : Validate weights and covariate_class_sizes lengths in fit()
+- GAM.fit() now raises ValueError immediately if `weights` or
+  `covariate_class_sizes`, when provided, do not match len(y). Previously
+  the mismatch propagated as a confusing broadcasting failure deep
+  inside deviance computation. Closes #40.
+
 2026-04-26 : Replace assert with raise in proximal-operator validation
 - _prox_normal, _prox_binomial, _prox_poisson, _prox_gamma, and
   _prox_inv_gaussian previously used `assert inv_link is not None` to
