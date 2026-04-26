@@ -1,3 +1,41 @@
+2026-04-26 : Quasi-likelihood families (quasi_poisson, quasi_binomial)
+- Added two new family aliases: family="quasi_poisson" routes to the
+  Poisson log-link prox, and family="quasi_binomial" routes to the
+  binomial logistic-link prox. Point estimates therefore coincide with
+  the corresponding full-likelihood family on identical data; only the
+  dispersion parameter (and any inferential quantity that scales with
+  it) differs.
+- _Feature dispatch (prox in _optimize, _glm_irls_terms,
+  _deviance_from_mu, _pearson_residuals, _unit_deviance_for_residuals,
+  _anscombe_residuals, deviance-residual sign branch) now uses a new
+  _base_family attribute that strips the "quasi_" prefix. The user-
+  facing _family is preserved for save/load and dispersion routing.
+  All existing single-family code paths see no behavior change since
+  _base_family == _family for non-quasi families.
+- GAM.dispersion() gained two cases. For quasi_poisson it always
+  returns the Pearson chi-square / (n - p) estimate (or the user-
+  supplied dispersion= value), reusing the existing
+  _poisson_overdispersion path. For quasi_binomial it calls a new
+  _binomial_pearson_dispersion that handles both Bernoulli (no
+  covariate classes) and binomial-counts data; the formula matches
+  the Pearson branch of _binomial_overdispersion but does not require
+  the replication structure that estimator assumes.
+- CANONICAL_LINKS, FAMILIES, and the Family Literal grew the two new
+  entries; SUPPORTED_FAMILY_LINK_PAIRS picks them up automatically
+  through CANONICAL_LINKS.items(). Non-canonical (quasi_*, link)
+  combinations are rejected at construction time with the same error
+  used for the existing convex-only allow-list.
+- Tests in tests/test_quasi_families.py cover: canonical-link
+  defaults, _base_family alias, point-estimate equivalence with the
+  full-likelihood cousin on overdispersed (NB and beta-binomial)
+  data, dispersion estimate above 1 on overdispersed data and
+  exactly 1 on the standard Poisson/binomial path, the Pearson
+  closed-form match, Bernoulli quasi-binomial fit, user-supplied
+  dispersion respected, non-canonical link rejection, sandwich SEs
+  agree with the Poisson sandwich at the same fitted mu (since phi
+  drops out), and a save/load round-trip preserving _family /
+  _base_family / dispersion. Closes #23.
+
 2026-04-26 : L1 regularization for linear features
 - _LinearFeature now accepts regularization={"l1": {"coef": lambda}}.
   The previous option-B rejection (added in #20) is removed; the
