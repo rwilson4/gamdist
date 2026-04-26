@@ -1,3 +1,40 @@
+2026-04-26 : Adaptive (weighted) lasso wrapper
+- Added `fit_adaptive_lasso(gam, X, y, *, gamma=1.0, eps=1e-6, **fit_kwargs)`
+  as a top-level helper exported from the `gamdist` package. It runs the
+  standard two-stage adaptive lasso of Zou (2006): fit `gam` once with
+  the user-configured L1 penalty to get pilot coefficients, rewrite each
+  L1-regularized feature's per-coefficient weight to
+  `base / (|pilot - prior| + eps) ** gamma`, then refit. Both stages are
+  ordinary weighted-L1 fits at fixed weights, so each subproblem stays
+  convex (CLAUDE.md North Star). Closes #31.
+- _LinearFeature: gained `_apply_adaptive_l1(gamma, eps)` that rewrites
+  the scalar `_coef1` from the pilot slope `_m`. The next `initialize()`
+  call rescales it by the model's `smoothing` into `_lambda1`.
+- _CategoricalFeature: gained `_apply_adaptive_l1(gamma, eps)` that
+  rewrites `_coef1` as a per-category dict, naturally exercising the
+  existing dict-coef support in `_compute_lambda`. When the user
+  configured a prior, the adaptive deviation is `|p_c - prior_c|` and
+  only categories named in the prior dict are rewritten; categories
+  excluded by an explicit dict-form base coefficient stay at zero.
+- _CategoricalFeature: made `initialize()` idempotent with respect to
+  the prior dict-to-vector conversion (the second stage of adaptive
+  lasso would otherwise call `.items()` on the previously-converted
+  ndarray and crash). The user-supplied prior keys are now persisted in
+  a separate `_prior_keys` set so `_compute_lambda` can apply uniform
+  base-coef penalties only to the originally-named categories on
+  re-initialize. Older pickles default `_prior_keys` to the categories
+  with non-zero `_prior` values for backward compatibility.
+- Tests in `tests/test_adaptive_lasso.py` cover: parameter validation
+  (gamma <= 0, eps <= 0, no L1 features), the per-feature
+  `_apply_adaptive_l1` behavior (linear scalar rewrite, no-op when no
+  L1 / zero base coef, categorical dict rewrite, dict-base-coef
+  category exclusion, prior-deviation logic and prior-key filtering),
+  end-to-end recovery on a sparse linear-features fixture (adaptive
+  shrinks noise harder than plain L1 and is closer to the true signal),
+  noise features driven essentially to zero with gamma=1, and a
+  five-level categorical with two active levels recovering sparsity
+  better than plain L1.
+
 2026-04-26 : Convex shape constraints on feature coefficients
 - Added a `constraints={...}` keyword to `GAM.add_feature` and to each
   feature class. Supported keys: `sign` (`"nonnegative"` /
