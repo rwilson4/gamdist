@@ -25,9 +25,11 @@ from __future__ import annotations
 import math
 import os
 import pickle
+import warnings
 from collections.abc import Callable
 from typing import Any
 
+import cvxpy as cvx
 import numpy as np
 import numpy.typing as npt
 import scipy.linalg as la
@@ -183,8 +185,29 @@ class _SplineFeature(_Feature):
         name: str | None = None,
         transform: Transform | None = None,
         rel_dof: float = 4.0,
+        regularization: dict[str, Any] | None = None,
         load_from_file: str | None = None,
     ) -> None:
+        """Initialize feature model (independent of data).
+
+        Parameters
+        ----------
+        name : str
+            Name for feature, used to make plots.
+        transform : callable
+            Transformation applied to the data (e.g. ``np.log1p``).
+        rel_dof : float
+            Relative degrees of freedom for the curvature smoother.
+        regularization : dict
+            Optional extra regularization beyond the built-in curvature
+            penalty. Currently only ``group_lasso`` is supported, taking
+            ``{"coef": λ}``: it adds ``λ · ‖N θ‖₂`` to the objective,
+            zeroing out the entire spline contribution once λ is large
+            enough.
+        load_from_file : str
+            If provided, restore parameters from this pickle path. All
+            other parameters are ignored when loading.
+        """
         self.__type__ = "spline"
         if load_from_file is not None:
             self._load(load_from_file)
@@ -204,6 +227,19 @@ class _SplineFeature(_Feature):
             self._has_transform = False
 
         self._rel_dof = float(rel_dof)
+
+        self._has_group_lasso = False
+        self._coef_group_lasso: float = 0.0
+        self._lambda_group_lasso: float = 0.0
+        self._solver = "CLARABEL"
+        if regularization is not None and "group_lasso" in regularization:
+            self._has_group_lasso = True
+            if "coef" in regularization["group_lasso"]:
+                self._coef_group_lasso = float(regularization["group_lasso"]["coef"])
+            else:
+                raise ValueError(
+                    "No coefficient specified for group_lasso regularization term."
+                )
 
     def initialize(
         self,
@@ -251,6 +287,9 @@ class _SplineFeature(_Feature):
             A = self._NtN + self._smoothing * self._lmbda * self._Omega
             self._dof = float(_solve_pos(A, self._NtN).trace())
 
+        if self._has_group_lasso:
+            self._lambda_group_lasso = self._coef_group_lasso * smoothing
+
         if save_flag:
             self._save_self = True
             if save_prefix is None:
@@ -283,9 +322,14 @@ class _SplineFeature(_Feature):
             "cho_factor": self._cho_factor,
             "dof": self._dof,
             "save_self": self._save_self,
+            "has_group_lasso": self._has_group_lasso,
+            "solver": self._solver,
         }
         if self._has_transform:
             mv["transform"] = self._transform
+        if self._has_group_lasso:
+            mv["coef_group_lasso"] = self._coef_group_lasso
+            mv["lambda_group_lasso"] = self._lambda_group_lasso
 
         with open(self._filename, "wb") as f:
             pickle.dump(mv, f)
@@ -318,6 +362,15 @@ class _SplineFeature(_Feature):
         self._c = np.zeros(len(self._xi))
         self._w = np.zeros(len(self._xi))
         self._constant = 0.0
+        # has_group_lasso / solver added later; default for older pickles.
+        self._has_group_lasso = mv.get("has_group_lasso", False)
+        self._solver = mv.get("solver", "CLARABEL")
+        if self._has_group_lasso:
+            self._coef_group_lasso = mv["coef_group_lasso"]
+            self._lambda_group_lasso = mv["lambda_group_lasso"]
+        else:
+            self._coef_group_lasso = 0.0
+            self._lambda_group_lasso = 0.0
 
     def optimize(self, fpumz: FloatArray, rho: float) -> FloatArray:
         """Solve the per-feature primal step.
@@ -334,6 +387,18 @@ class _SplineFeature(_Feature):
         fkp1 : (m,) ndarray
             Vector representing this feature's contribution to the response.
         """
+        if self._has_group_lasso:
+            self._theta = self._optimize_cvx(fpumz, rho)
+        else:
+            self._theta = self._optimize_chol(fpumz, rho)
+
+        if self._save_self:
+            self._save()
+
+        return self._N.dot(self._theta)
+
+    def _optimize_chol(self, fpumz: FloatArray, rho: float) -> FloatArray:
+        """Closed-form Cholesky-based primal step (no group lasso)."""
         y = self._N.dot(self._theta) - fpumz
         Nty = self._N.transpose().dot(y)
         if not self._computed_cho_factor:
@@ -347,12 +412,52 @@ class _SplineFeature(_Feature):
 
         assert self._cho_factor is not None
         theta_wc = la.cho_solve(self._cho_factor, Nty, check_finite=False)
-        self._theta = theta_wc - self._constant * self._c.dot(theta_wc) * self._w
+        return theta_wc - self._constant * self._c.dot(theta_wc) * self._w
 
-        if self._save_self:
-            self._save()
+    def _optimize_cvx(self, fpumz: FloatArray, rho: float) -> FloatArray:
+        """Primal step via cvxpy when a group_lasso term is present.
 
-        return self._N.dot(self._theta)
+        Group lasso on the per-feature contribution f_j = N theta penalizes
+        ``λ · ||N θ||₂``, which is non-smooth at zero and breaks the
+        closed-form Cholesky path. The fast path is used whenever group
+        lasso is off, so this branch only runs when needed.
+        """
+        target = self._N.dot(self._theta) - fpumz
+        K = len(self._theta)
+        nu = 2.0 * self._smoothing * self._lmbda / rho
+        gamma = 2.0 * self._lambda_group_lasso / rho
+
+        theta_var = cvx.Variable(K)
+        N_const = cvx.Constant(self._N)
+        Omega_const = cvx.psd_wrap(cvx.Constant(self._Omega))
+        c_vec = np.mean(self._N, axis=0)
+
+        obj = (
+            cvx.sum_squares(N_const @ theta_var - cvx.Constant(target))
+            + nu * cvx.quad_form(theta_var, Omega_const)
+            + gamma * cvx.norm(N_const @ theta_var, 2)
+        )
+        constraints = [cvx.Constant(c_vec) @ theta_var == 0]
+        prob = cvx.Problem(cvx.Minimize(obj), constraints)
+        # cvxpy's "Solution may be inaccurate" UserWarning escapes the
+        # cvxpy.* module filter (cvxpy attributes it to the caller via
+        # stacklevel walking). We accept OPTIMAL_INACCURATE explicitly
+        # below, so suppress the noise here.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="Solution may be inaccurate", category=UserWarning
+            )
+            prob.solve(verbose=self._verbose, solver=self._solver)
+
+        if prob.status not in (cvx.OPTIMAL, cvx.OPTIMAL_INACCURATE):
+            raise RuntimeError(
+                f"Spline feature {self._name!r} failed to converge "
+                f"(status={prob.status!r})."
+            )
+        value = theta_var.value
+        if value is None:
+            raise RuntimeError(f"Spline feature {self._name!r} produced no solution.")
+        return np.asarray(value, dtype=float).ravel()
 
     def compute_dual_tol(self, y: FloatArray) -> float:
         """Compute this feature's contribution to the dual residual tolerance."""
