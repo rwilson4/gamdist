@@ -44,6 +44,7 @@ class _CategoricalFeature(_Feature):
         self,
         name: str | None = None,
         regularization: dict[str, Any] | None = None,
+        constraints: dict[str, Any] | None = None,
         load_from_file: str | None = None,
     ) -> None:
         """Initialize feature model (independent of data).
@@ -66,6 +67,22 @@ class _CategoricalFeature(_Feature):
             standard Huber function — ridge for ``|q_c| ≤ δ``,
             linear with slope ``λ_c · δ`` outside. See the package
             README for details.
+        constraints : dict
+            Optional convex shape constraints on the per-category
+            coefficient vector ``q``. ``lower`` / ``upper`` take floats
+            and bound every ``q_c``. ``sign`` (``"nonnegative"`` or
+            ``"nonpositive"``) is shorthand for one-sided ``lower=0`` /
+            ``upper=0`` and may not combine with ``lower`` / ``upper``.
+            ``monotonic`` (``"increasing"`` or ``"decreasing"``),
+            ``convex``, and ``concave`` impose ordering / second-
+            difference constraints along a user-supplied ``order``
+            (a list of category labels). The category zero-sum
+            constraint is preserved, so ``sign`` constraints will
+            collapse the entire vector to zero -- they exist for the
+            occasional regulated use case where that is the desired
+            "no negative effects" outcome and for symmetry with
+            linear features. All constraints append to the existing
+            cvxpy program in ``optimize``.
         load_from_file : str
             Pickle path used to restore parameters. If specified,
             other parameters are ignored.
@@ -208,6 +225,97 @@ class _CategoricalFeature(_Feature):
             if (self._has_l1 or self._has_l2) and "prior" in regularization:
                 self._has_prior = True
                 self._prior: Any = regularization["prior"]
+
+        self._has_constraints = False
+        self._constraint_lower: float = -np.inf
+        self._constraint_upper: float = np.inf
+        self._constraint_monotonic: str | None = None
+        self._constraint_convex: bool = False
+        self._constraint_concave: bool = False
+        self._constraint_order: list[Any] = []
+        if constraints is not None:
+            self._has_constraints = True
+            allowed = {
+                "sign",
+                "lower",
+                "upper",
+                "monotonic",
+                "convex",
+                "concave",
+                "order",
+            }
+            for key in constraints:
+                if key not in allowed:
+                    raise ValueError(f"unknown constraint key {key!r}.")
+            if "sign" in constraints and (
+                "lower" in constraints or "upper" in constraints
+            ):
+                raise ValueError(
+                    "constraints: 'sign' is shorthand for 'lower' / 'upper' and "
+                    "may not be combined with them."
+                )
+            if "sign" in constraints:
+                sign = constraints["sign"]
+                if sign == "nonnegative":
+                    self._constraint_lower = 0.0
+                elif sign == "nonpositive":
+                    self._constraint_upper = 0.0
+                else:
+                    raise ValueError(
+                        f"constraints['sign']: expected 'nonnegative' or "
+                        f"'nonpositive', got {sign!r}."
+                    )
+            if "lower" in constraints:
+                self._constraint_lower = float(constraints["lower"])
+            if "upper" in constraints:
+                self._constraint_upper = float(constraints["upper"])
+            if self._constraint_lower > self._constraint_upper:
+                raise ValueError(
+                    f"constraints: lower ({self._constraint_lower}) exceeds "
+                    f"upper ({self._constraint_upper})."
+                )
+            if "convex" in constraints and "concave" in constraints:
+                raise ValueError(
+                    "constraints: 'convex' and 'concave' are mutually exclusive."
+                )
+            if "monotonic" in constraints:
+                direction = constraints["monotonic"]
+                if direction not in {"increasing", "decreasing"}:
+                    raise ValueError(
+                        f"constraints['monotonic']: expected 'increasing' or "
+                        f"'decreasing', got {direction!r}."
+                    )
+                self._constraint_monotonic = direction
+            if constraints.get("convex"):
+                self._constraint_convex = True
+            if constraints.get("concave"):
+                self._constraint_concave = True
+            needs_order = (
+                self._constraint_monotonic is not None
+                or self._constraint_convex
+                or self._constraint_concave
+            )
+            if needs_order:
+                if "order" not in constraints:
+                    raise ValueError(
+                        "constraints: 'monotonic' / 'convex' / 'concave' on a "
+                        "categorical feature require an 'order' list of category "
+                        "labels defining the sequence."
+                    )
+                order = list(constraints["order"])
+                if len(order) < 2:
+                    raise ValueError(
+                        "constraints['order']: need at least two categories."
+                    )
+                if len(set(order)) != len(order):
+                    raise ValueError("constraints['order']: categories must be unique.")
+                self._constraint_order = order
+                # Categories listed in `order` are added to the feature's known
+                # category set so the optimize step can reference their indices
+                # even if the training data never observes them.
+                for cat in order:
+                    if cat not in self._categories:
+                        self._categories.append(cat)
 
     def initialize(
         self,
@@ -414,6 +522,14 @@ class _CategoricalFeature(_Feature):
             mv["lambda_huber_vec"] = self._lambda_huber_vec
         if self._has_prior:
             mv["prior"] = self._prior
+        if self._has_constraints:
+            mv["has_constraints"] = True
+            mv["constraint_lower"] = self._constraint_lower
+            mv["constraint_upper"] = self._constraint_upper
+            mv["constraint_monotonic"] = self._constraint_monotonic
+            mv["constraint_convex"] = self._constraint_convex
+            mv["constraint_concave"] = self._constraint_concave
+            mv["constraint_order"] = self._constraint_order
 
         with open(self._filename, "wb") as f:
             pickle.dump(mv, f)
@@ -479,6 +595,22 @@ class _CategoricalFeature(_Feature):
         self._has_prior = mv["has_prior"]
         if self._has_prior:
             self._prior = mv["prior"]
+        # has_constraints added later; default to False for older pickles.
+        self._has_constraints = mv.get("has_constraints", False)
+        if self._has_constraints:
+            self._constraint_lower = mv["constraint_lower"]
+            self._constraint_upper = mv["constraint_upper"]
+            self._constraint_monotonic = mv["constraint_monotonic"]
+            self._constraint_convex = mv["constraint_convex"]
+            self._constraint_concave = mv["constraint_concave"]
+            self._constraint_order = mv["constraint_order"]
+        else:
+            self._constraint_lower = -np.inf
+            self._constraint_upper = np.inf
+            self._constraint_monotonic = None
+            self._constraint_convex = False
+            self._constraint_concave = False
+            self._constraint_order = []
         self._na_index = mv["na_index"]
         self.x = mv["x"]
         self.p = mv["p"]
@@ -531,6 +663,30 @@ class _CategoricalFeature(_Feature):
 
         c = cvx.Constant(self._ccs)
         constraints: list[Any] = [c.T @ q == 0]
+
+        if self._has_constraints:
+            if np.isfinite(self._constraint_lower):
+                constraints.append(q >= self._constraint_lower)
+            if np.isfinite(self._constraint_upper):
+                constraints.append(q <= self._constraint_upper)
+            if self._constraint_order:
+                idx = [self._category_hash[cat] for cat in self._constraint_order]
+                if self._constraint_monotonic == "increasing":
+                    for i in range(len(idx) - 1):
+                        constraints.append(q[idx[i + 1]] >= q[idx[i]])
+                elif self._constraint_monotonic == "decreasing":
+                    for i in range(len(idx) - 1):
+                        constraints.append(q[idx[i + 1]] <= q[idx[i]])
+                if self._constraint_convex:
+                    for i in range(1, len(idx) - 1):
+                        constraints.append(
+                            q[idx[i + 1]] - 2.0 * q[idx[i]] + q[idx[i - 1]] >= 0
+                        )
+                if self._constraint_concave:
+                    for i in range(1, len(idx) - 1):
+                        constraints.append(
+                            q[idx[i + 1]] - 2.0 * q[idx[i]] + q[idx[i - 1]] <= 0
+                        )
 
         if self._has_l1:
             q_prior = self._prior if self._has_prior else np.zeros(self._num_categories)

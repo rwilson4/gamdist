@@ -186,6 +186,7 @@ class _SplineFeature(_Feature):
         transform: Transform | None = None,
         rel_dof: float = 4.0,
         regularization: dict[str, Any] | None = None,
+        constraints: dict[str, Any] | None = None,
         load_from_file: str | None = None,
     ) -> None:
         """Initialize feature model (independent of data).
@@ -207,6 +208,22 @@ class _SplineFeature(_Feature):
             variant clips the largest pointwise contribution rather than
             applying uniform L2 contraction. The two variants combine
             additively when both are specified.
+        constraints : dict
+            Optional convex shape constraints on the fitted spline
+            evaluated at the knots ``xi``. ``lower`` / ``upper`` take
+            floats and bound the spline value. ``sign``
+            (``"nonnegative"`` or ``"nonpositive"``) is shorthand and
+            may not combine with ``lower`` / ``upper``. ``monotonic``
+            (``"increasing"`` or ``"decreasing"``) constrains
+            consecutive knot values; ``convex`` / ``concave`` bound
+            the second differences of the knot values. Knots are
+            sorted, so the constraints are applied along the natural
+            ordering. Constraint enforcement at the knots is a near-
+            global proxy for the smooth cubic spline (sufficient in
+            practice for the intended dose-response / regulated use
+            cases). Constraints append to the cvxpy program in
+            ``optimize`` -- the closed-form Cholesky path is only
+            used when no constraints and no group lasso are active.
         load_from_file : str
             If provided, restore parameters from this pickle path. All
             other parameters are ignored when loading.
@@ -258,6 +275,62 @@ class _SplineFeature(_Feature):
                     "No coefficient specified for group_lasso_inf regularization term."
                 )
 
+        self._has_constraints = False
+        self._constraint_lower: float = -np.inf
+        self._constraint_upper: float = np.inf
+        self._constraint_monotonic: str | None = None
+        self._constraint_convex: bool = False
+        self._constraint_concave: bool = False
+        if constraints is not None:
+            self._has_constraints = True
+            allowed = {"sign", "lower", "upper", "monotonic", "convex", "concave"}
+            for key in constraints:
+                if key not in allowed:
+                    raise ValueError(f"unknown constraint key {key!r}.")
+            if "sign" in constraints and (
+                "lower" in constraints or "upper" in constraints
+            ):
+                raise ValueError(
+                    "constraints: 'sign' is shorthand for 'lower' / 'upper' and "
+                    "may not be combined with them."
+                )
+            if "sign" in constraints:
+                sign = constraints["sign"]
+                if sign == "nonnegative":
+                    self._constraint_lower = 0.0
+                elif sign == "nonpositive":
+                    self._constraint_upper = 0.0
+                else:
+                    raise ValueError(
+                        f"constraints['sign']: expected 'nonnegative' or "
+                        f"'nonpositive', got {sign!r}."
+                    )
+            if "lower" in constraints:
+                self._constraint_lower = float(constraints["lower"])
+            if "upper" in constraints:
+                self._constraint_upper = float(constraints["upper"])
+            if self._constraint_lower > self._constraint_upper:
+                raise ValueError(
+                    f"constraints: lower ({self._constraint_lower}) exceeds "
+                    f"upper ({self._constraint_upper})."
+                )
+            if "convex" in constraints and "concave" in constraints:
+                raise ValueError(
+                    "constraints: 'convex' and 'concave' are mutually exclusive."
+                )
+            if "monotonic" in constraints:
+                direction = constraints["monotonic"]
+                if direction not in {"increasing", "decreasing"}:
+                    raise ValueError(
+                        f"constraints['monotonic']: expected 'increasing' or "
+                        f"'decreasing', got {direction!r}."
+                    )
+                self._constraint_monotonic = direction
+            if constraints.get("convex"):
+                self._constraint_convex = True
+            if constraints.get("concave"):
+                self._constraint_concave = True
+
     def initialize(
         self,
         x: npt.NDArray[Any],
@@ -290,6 +363,13 @@ class _SplineFeature(_Feature):
         self._N = N
         self._NtN = N.transpose().dot(N)
         self._Omega = _omega_curvature(self._xi)
+        # Spline basis evaluated at the knots themselves -- used by shape
+        # constraints to land at the natural cubic-regression-spline anchor
+        # points.
+        N_xi = np.zeros((num_knots, num_knots))
+        for i in range(num_knots):
+            N_xi[i, :] = _evaluate_spline_basis(self._xi[i], self._xi)
+        self._N_xi = N_xi
         self._theta = np.zeros(num_knots)
         self._lmbda = _determine_smoothing(self._NtN, self._Omega, self._rel_dof)
         self._computed_cho_factor = False
@@ -334,6 +414,7 @@ class _SplineFeature(_Feature):
             "verbose": self._verbose,
             "xi": np.asarray(self._xi),
             "N": self._N,
+            "N_xi": self._N_xi,
             "NtN": self._NtN,
             "Omega": self._Omega,
             "theta": self._theta,
@@ -354,6 +435,13 @@ class _SplineFeature(_Feature):
         if self._has_group_lasso_inf:
             mv["coef_group_lasso_inf"] = self._coef_group_lasso_inf
             mv["lambda_group_lasso_inf"] = self._lambda_group_lasso_inf
+        if self._has_constraints:
+            mv["has_constraints"] = True
+            mv["constraint_lower"] = self._constraint_lower
+            mv["constraint_upper"] = self._constraint_upper
+            mv["constraint_monotonic"] = self._constraint_monotonic
+            mv["constraint_convex"] = self._constraint_convex
+            mv["constraint_concave"] = self._constraint_concave
 
         with open(self._filename, "wb") as f:
             pickle.dump(mv, f)
@@ -375,6 +463,17 @@ class _SplineFeature(_Feature):
         self._verbose = mv["verbose"]
         self._xi = mv["xi"]
         self._N = mv["N"]
+        # N_xi added alongside constraints; recover for older pickles by
+        # rebuilding from the persisted knots.
+        if "N_xi" in mv:
+            self._N_xi = mv["N_xi"]
+        else:
+            xi = np.asarray(self._xi)
+            num_knots = len(xi)
+            N_xi = np.zeros((num_knots, num_knots))
+            for i in range(num_knots):
+                N_xi[i, :] = _evaluate_spline_basis(xi[i], xi)
+            self._N_xi = N_xi
         self._NtN = mv["NtN"]
         self._Omega = mv["Omega"]
         self._theta = mv["theta"]
@@ -403,6 +502,20 @@ class _SplineFeature(_Feature):
         else:
             self._coef_group_lasso_inf = 0.0
             self._lambda_group_lasso_inf = 0.0
+        # has_constraints added later; default to False for older pickles.
+        self._has_constraints = mv.get("has_constraints", False)
+        if self._has_constraints:
+            self._constraint_lower = mv["constraint_lower"]
+            self._constraint_upper = mv["constraint_upper"]
+            self._constraint_monotonic = mv["constraint_monotonic"]
+            self._constraint_convex = mv["constraint_convex"]
+            self._constraint_concave = mv["constraint_concave"]
+        else:
+            self._constraint_lower = -np.inf
+            self._constraint_upper = np.inf
+            self._constraint_monotonic = None
+            self._constraint_convex = False
+            self._constraint_concave = False
 
     def optimize(self, fpumz: FloatArray, rho: float) -> FloatArray:
         """Solve the per-feature primal step.
@@ -419,7 +532,7 @@ class _SplineFeature(_Feature):
         fkp1 : (m,) ndarray
             Vector representing this feature's contribution to the response.
         """
-        if self._has_group_lasso or self._has_group_lasso_inf:
+        if self._has_group_lasso or self._has_group_lasso_inf or self._has_constraints:
             self._theta = self._optimize_cvx(fpumz, rho)
         else:
             self._theta = self._optimize_chol(fpumz, rho)
@@ -474,6 +587,25 @@ class _SplineFeature(_Feature):
         if self._has_group_lasso_inf:
             obj = obj + gamma_inf * cvx.norm_inf(N_const @ theta_var)
         constraints = [cvx.Constant(c_vec) @ theta_var == 0]
+
+        if self._has_constraints:
+            # Shape constraints land on the spline value evaluated at the knots
+            # (the natural sequence for cubic regression splines). f_xi[i] is
+            # spline(xi_i); pinning these gives near-global shape control on a
+            # smooth cubic.
+            f_xi = cvx.Constant(self._N_xi) @ theta_var
+            if np.isfinite(self._constraint_lower):
+                constraints.append(f_xi >= self._constraint_lower)
+            if np.isfinite(self._constraint_upper):
+                constraints.append(f_xi <= self._constraint_upper)
+            if self._constraint_monotonic == "increasing":
+                constraints.append(cvx.diff(f_xi) >= 0)
+            elif self._constraint_monotonic == "decreasing":
+                constraints.append(cvx.diff(f_xi) <= 0)
+            if self._constraint_convex:
+                constraints.append(cvx.diff(f_xi, 2) >= 0)
+            if self._constraint_concave:
+                constraints.append(cvx.diff(f_xi, 2) <= 0)
         prob = cvx.Problem(cvx.Minimize(obj), constraints)
         # cvxpy's "Solution may be inaccurate" UserWarning escapes the
         # cvxpy.* module filter (cvxpy attributes it to the caller via
@@ -483,7 +615,16 @@ class _SplineFeature(_Feature):
             warnings.filterwarnings(
                 "ignore", message="Solution may be inaccurate", category=UserWarning
             )
-            prob.solve(verbose=self._verbose, solver=self._solver)
+            try:
+                prob.solve(verbose=self._verbose, solver=self._solver)
+            except cvx.SolverError:
+                # Constrained sub-problems (especially convex / concave shape
+                # constraints across many knots) can hit CLARABEL's numerical
+                # tolerance with a sum_squares + curvature-penalty + many
+                # inequality constraints structure. SCS is a first-order
+                # solver that handles the ill-conditioning, so fall back to it
+                # when the default fails.
+                prob.solve(verbose=self._verbose, solver="SCS")
 
         if prob.status not in (cvx.OPTIMAL, cvx.OPTIMAL_INACCURATE):
             raise RuntimeError(

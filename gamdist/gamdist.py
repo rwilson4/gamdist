@@ -623,6 +623,7 @@ class GAM:
         transform: Callable[[npt.NDArray[Any]], npt.NDArray[Any]] | None = None,
         rel_dof: float | None = None,
         regularization: dict[str, Any] | None = None,
+        constraints: dict[str, Any] | None = None,
     ) -> None:
         """Add a feature
 
@@ -690,6 +691,18 @@ class GAM:
              ``δ``. Available on linear and categorical features.
              Other features have more diverse options described in
              their own documentation.
+        constraints : dictionary or None
+             Optional convex shape constraints on the feature's
+             coefficients. ``sign`` (``"nonnegative"`` /
+             ``"nonpositive"``), ``lower`` and ``upper`` (floats) bound
+             coefficients. ``monotonic`` (``"increasing"`` /
+             ``"decreasing"``), ``convex`` and ``concave`` impose
+             ordering / second-difference constraints (categorical
+             features additionally require an ``order`` list of
+             category labels; splines order along the knots).
+             Linear features support only ``sign`` / ``lower`` /
+             ``upper``. See each feature class's docstring for
+             details.
 
         Returns
         -------
@@ -698,15 +711,23 @@ class GAM:
         """
         f: _Feature
         if type == "categorical":
-            f = _CategoricalFeature(name, regularization=regularization)
+            f = _CategoricalFeature(
+                name, regularization=regularization, constraints=constraints
+            )
         elif type == "linear":
-            f = _LinearFeature(name, transform, regularization=regularization)
+            f = _LinearFeature(
+                name,
+                transform,
+                regularization=regularization,
+                constraints=constraints,
+            )
         elif type == "spline":
             f = _SplineFeature(
                 name,
                 transform,
                 rel_dof if rel_dof is not None else 4.0,
                 regularization=regularization,
+                constraints=constraints,
             )
         else:
             raise ValueError(f"Features of type {type} not supported.")

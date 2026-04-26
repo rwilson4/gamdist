@@ -44,6 +44,7 @@ class _LinearFeature(_Feature):
         name: str | None = None,
         transform: Transform | None = None,
         regularization: dict[str, Any] | None = None,
+        constraints: dict[str, Any] | None = None,
         load_from_file: str | None = None,
     ) -> None:
         """Initialize feature model (independent of data).
@@ -80,6 +81,19 @@ class _LinearFeature(_Feature):
             additively in the soft-threshold and stack with ``l2``
             (elastic net). The top-level ``prior`` key (if present)
             provides a scalar prior estimate for the slope.
+        constraints : dict
+            Optional convex shape constraints on the slope. ``sign``
+            takes ``"nonnegative"`` (``m ≥ 0``) or ``"nonpositive"``
+            (``m ≤ 0``); ``lower`` and ``upper`` take floats and bound
+            ``m`` from below / above. ``sign`` is shorthand and may
+            not be combined with ``lower`` / ``upper``. The
+            single-slope linear feature does not support ``monotonic``
+            / ``convex`` / ``concave`` (those are well-defined only
+            on multi-coefficient features); passing them raises.
+            Constraints clip the per-feature primal step's
+            unconstrained closed-form solution -- the objective is
+            convex in ``m``, so projection onto ``[lower, upper]`` is
+            the constrained optimum. No cvxpy on this path.
         load_from_file : str
             If provided, restore parameters from this pickle path. All
             other parameters are ignored when loading.
@@ -188,6 +202,47 @@ class _LinearFeature(_Feature):
                 self._has_prior = True
                 self._prior = float(regularization.get("prior", 0.0))
 
+        self._lower: float = -np.inf
+        self._upper: float = np.inf
+        self._has_constraints = False
+        if constraints is not None:
+            self._has_constraints = True
+            for key in constraints:
+                if key not in {"sign", "lower", "upper"}:
+                    if key in {"monotonic", "convex", "concave", "order"}:
+                        raise ValueError(
+                            f"linear feature does not support constraint {key!r}; "
+                            "monotonicity / convexity require a multi-coefficient "
+                            "feature (categorical or spline)."
+                        )
+                    raise ValueError(f"unknown constraint key {key!r}.")
+            if "sign" in constraints and (
+                "lower" in constraints or "upper" in constraints
+            ):
+                raise ValueError(
+                    "constraints: 'sign' is shorthand for 'lower' / 'upper' and may "
+                    "not be combined with them."
+                )
+            if "sign" in constraints:
+                sign = constraints["sign"]
+                if sign == "nonnegative":
+                    self._lower = 0.0
+                elif sign == "nonpositive":
+                    self._upper = 0.0
+                else:
+                    raise ValueError(
+                        f"constraints['sign']: expected 'nonnegative' or "
+                        f"'nonpositive', got {sign!r}."
+                    )
+            if "lower" in constraints:
+                self._lower = float(constraints["lower"])
+            if "upper" in constraints:
+                self._upper = float(constraints["upper"])
+            if self._lower > self._upper:
+                raise ValueError(
+                    f"constraints: lower ({self._lower}) exceeds upper ({self._upper})."
+                )
+
     def initialize(
         self,
         x: npt.NDArray[Any],
@@ -295,6 +350,10 @@ class _LinearFeature(_Feature):
             mv["lambda_group_lasso_inf"] = self._lambda_group_lasso_inf
         if self._has_prior:
             mv["prior"] = self._prior
+        if self._has_constraints:
+            mv["has_constraints"] = True
+            mv["lower"] = self._lower
+            mv["upper"] = self._upper
 
         with open(self._filename, "wb") as f:
             pickle.dump(mv, f)
@@ -347,6 +406,14 @@ class _LinearFeature(_Feature):
         self._has_prior = mv["has_prior"]
         if self._has_prior:
             self._prior = mv["prior"]
+        # has_constraints added later; default to False for older pickles.
+        self._has_constraints = mv.get("has_constraints", False)
+        if self._has_constraints:
+            self._lower = mv["lower"]
+            self._upper = mv["upper"]
+        else:
+            self._lower = -np.inf
+            self._upper = np.inf
 
         self._verbose = mv["verbose"]
         self._name = mv["name"]
@@ -426,6 +493,15 @@ class _LinearFeature(_Feature):
                     self._m = 0.0
             else:
                 self._m = b / denom
+
+        if self._has_constraints:
+            # Objective in m is convex (quadratic + piecewise-linear penalty),
+            # so projecting the unconstrained minimizer onto [lower, upper] is
+            # the constrained optimum.
+            if self._m < self._lower:
+                self._m = self._lower
+            elif self._m > self._upper:
+                self._m = self._upper
 
         self._b = -self._m * self._xmean
 
