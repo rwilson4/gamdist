@@ -1,3 +1,47 @@
+2026-04-26 : Huber penalty regularizer for linear and categorical features
+- Added regularization={"huber": {"coef": lambda, "delta": delta}} to
+  _LinearFeature and _CategoricalFeature. The penalty
+  lambda * h_delta(coef) is the standard Huber loss applied to each
+  per-feature coefficient: 0.5*c^2 for |c| <= delta, delta*|c| -
+  0.5*delta^2 outside. Convex, smooth at the origin, with bounded
+  per-coefficient gradient -- ridge-like for small magnitudes,
+  L1-like for large ones. Closes #27.
+- _LinearFeature: closed-form 1-D piecewise solve. Inside the band
+  the penalty acts like ridge with strength lambda; outside it acts
+  like L1 with strength lambda*delta. Combines additively with l2
+  in closed form (denom_quad = xtx + (2*lambda2 + lambda)/rho inside
+  the band, denom_lin = xtx + 2*lambda2/rho outside; the linear-
+  region offset is lambda*delta/rho). Combinations with l1,
+  group_lasso, or group_lasso_inf are rejected at __init__ with a
+  clear error -- those penalize the same |m| and stack non-trivially
+  with the Huber linear-region threshold; if combinations are needed
+  in the future they should be implemented explicitly rather than
+  silently doing the wrong thing. No cvxpy on the linear path.
+- _CategoricalFeature: penalty term
+  (1/rho) * sum_c lambda_c * cvx.huber(q_c, delta) is added to the
+  cvxpy objective. cvxpy's huber atom is 2x the standard 0.5-leading
+  Huber loss; the (2/rho) scaling factor used elsewhere in the
+  categorical objective absorbs the 0.5, leaving (1/rho) on the
+  cvxpy term. coef accepts a scalar (uniform across categories) or
+  a per-category dict (matching the l2 pattern); delta is a single
+  positive scalar. Combinations with all existing categorical
+  penalties just work via cvxpy.
+- Save/load round-trips updated for both feature types; older
+  pickles default has_huber=False with zero coefficient.
+- gamdist.add_feature docstring mentions the new key. Tests in
+  tests/test_{linear,categorical}_huber.py cover: missing-coef /
+  missing-delta / non-positive-delta error paths (and negative coef
+  on linear), smoothing scaling for both scalar and dict coef,
+  coef=0 matches unpenalized, large-coef zeros the contribution,
+  the quadratic-region and linear-region closed-form math (linear),
+  large-delta collapse to ridge with strength lambda/2 (both), the
+  combination with l2 closed form (linear), the cvxpy branch's
+  shrinkage geometry vs. ridge with the same lambda (categorical),
+  rejection of combinations with l1/group_lasso variants on linear,
+  save/load round-trip, and an end-to-end GAM fit demonstrating
+  Huber's bounded-influence behavior on a single high-leverage point
+  (linear) or a single extreme category (categorical).
+
 2026-04-26 : L_inf-norm group lasso variant
 - Added regularization={"group_lasso_inf": {"coef": lambda}} as a
   drop-in companion to the existing L2 group lasso on _LinearFeature,
