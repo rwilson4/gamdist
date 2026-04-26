@@ -56,37 +56,9 @@ Link = Literal[
 ]
 FeatureType = Literal["categorical", "linear", "spline"]
 
-# To do:
-# - Hierarchical models
-# - Piecewise constant fits, total variation regularization
-# - Monotone constraint
-# - Implement Multinomial, Proportional Hazards
-# - Implement outlier detection
-# - Confidence intervals on mu, predictions (probably need to use Bootstrap but can
-#   do so intelligently)
-# - Confidence intervals on model parameters, p-values
-# - Group lasso penalty for linear and spline features (l2 norm on
-#   f_j(x_j; p_j); categorical is done -- see regularization={"group_lasso": ...})
-# - Group lasso variant with l_\infty norm on f_j(x_j; p_j)
-# - Interactions
-# - Runtime optimization (Cython)
-#
-# Done:
-# - Implement Gaussian, Binomial, Poisson, Gamma, Inv Gaussian,
-# - Plot splines
-# - Deviance (on training set and test set), AIC, AICc, BIC, R^2,
-#   Dispersion, GCV, UBRE
-# - Response, Pearson, deviance, Anscombe residuals; residual-vs-fitted,
-#   residual-vs-predictor, and QQ plots
-# - Write documentation
-# - Check implementation of Gamma dispersion
-# - Implement probit, complementary log-log links.
-# - Implement Binomial models for covariate classes
-# - Constrain spline to have mean prediction 0 over the data
-# - Save and load properly
-# - Implement overdispersion for Binomial family
-# - Implement overdispersion for Poisson family
-# - Fit in parallel (n_jobs= argument on fit(), ThreadPoolExecutor)
+# Open work and historical "done" list now live in the GitHub issue
+# tracker and changelog.txt respectively; see
+# https://github.com/rwilson4/gamdist/issues for the current roadmap.
 
 FAMILIES = ['normal',
             'binomial',
