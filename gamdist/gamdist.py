@@ -1093,6 +1093,234 @@ class GAM:
 
         return np.asarray(self._eval_inv_link(eta), dtype=float)
 
+    def _design_matrix(
+        self, X: pd.DataFrame | None = None
+    ) -> tuple[FloatArray, list[str]]:
+        """Build a full-rank design matrix used by ``robust_covariance``.
+
+        Parametrization (matches ``statsmodels`` / ``patsy`` defaults):
+
+        * column 0: intercept (all ones)
+        * one column per linear feature: the (transformed) raw values
+          ``transform(x)`` -- *not* mean-centered. Centering is a
+          reparametrization of the intercept and does not change the
+          fitted ``mu`` or the inferential conclusions on the linear
+          predictor; using raw columns makes the coefficient align with
+          ``statsmodels`` term-by-term.
+        * for each categorical feature with ``K`` levels: ``K - 1``
+          indicator columns dropping the lexicographically-first level
+          (treatment contrast), again matching ``statsmodels`` / ``patsy``.
+
+        Spline features and binomial covariate classes are not yet
+        wired up here and raise ``NotImplementedError``.
+
+        Parameters
+        ----------
+        X : pandas DataFrame or None
+            If ``None``, builds the design matrix from the training
+            data already absorbed by the features. If a frame is
+            supplied, its columns are looked up by feature name and
+            the per-feature design block is constructed at those
+            values (with the same dropped-category as training).
+
+        Returns
+        -------
+        D : (n, p) ndarray
+        names : list of str
+            Column names: ``"Intercept"`` followed by per-feature
+            labels (e.g. ``"purchases"``, ``"country[T.GBR]"``).
+        """
+        if not self._fitted:
+            raise AttributeError("Model not yet fit.")
+        if self._has_covariate_classes:
+            raise NotImplementedError(
+                "Inferential design matrix not yet supported for binomial "
+                "covariate classes."
+            )
+
+        if X is None:
+            n = self._num_obs
+        else:
+            n = len(X)
+
+        cols: list[FloatArray] = [np.ones(n, dtype=float)]
+        names: list[str] = ["Intercept"]
+
+        for fname, feature in self._features.items():
+            if isinstance(feature, _LinearFeature):
+                if X is None:
+                    block = np.asarray(feature._x + feature._xmean, dtype=float)
+                else:
+                    raw = np.asarray(X[fname].values)
+                    if feature._has_transform:
+                        block = np.asarray(feature._transform(raw), dtype=float)
+                    else:
+                        block = raw.astype(float)
+                cols.append(block)
+                names.append(fname)
+            elif isinstance(feature, _CategoricalFeature):
+                cats = sorted(feature._categories, key=str)
+                if X is None:
+                    raw = np.array(
+                        [feature._categories[idx] for idx in feature.x], dtype=object
+                    )
+                else:
+                    raw = np.asarray(X[fname].values)
+                # Drop the lexicographically-first level (treatment contrast).
+                for level in cats[1:]:
+                    cols.append(np.asarray(raw == level, dtype=float))
+                    names.append(f"{fname}[T.{level}]")
+            else:
+                raise NotImplementedError(
+                    f"Feature {fname!r} of type {feature.__type__!r} is not yet "
+                    "supported by robust_covariance / _design_matrix. Currently "
+                    "only linear and categorical features are wired up."
+                )
+
+        return np.column_stack(cols), names
+
+    def _glm_irls_terms(
+        self,
+        y: npt.NDArray[Any],
+        mu: FloatArray,
+    ) -> tuple[FloatArray, FloatArray]:
+        """Per-observation IRLS weight ``w`` and eta-scale score ``s``.
+
+        For a GLM with linear predictor ``eta``, mean ``mu = g^{-1}(eta)``
+        and variance function ``V(mu)``, the score and Fisher information
+        with respect to ``eta`` are
+
+            s_i = (y_i - mu_i) * (dmu/deta)_i / V(mu_i)
+            w_i = (dmu/deta)_i^2 / V(mu_i)
+
+        Together they give the sandwich pieces ``X' diag(w) X`` (bread)
+        and ``X' diag(s^2) X`` (meat).
+        """
+        if self._family == "normal":
+            v = np.ones_like(mu, dtype=float)
+        elif self._family == "binomial":
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
+            v = mu_c * (1.0 - mu_c)
+        elif self._family == "poisson":
+            v = mu
+        elif self._family == "gamma":
+            v = mu * mu
+        elif self._family == "inverse_gaussian":
+            v = mu * mu * mu
+        else:
+            raise NotImplementedError(
+                f"robust_covariance does not yet support the {self._family!r} "
+                "family. Supported: normal, binomial, poisson, gamma, "
+                "inverse_gaussian."
+            )
+
+        if self._link == "identity":
+            dmu_deta = np.ones_like(mu, dtype=float)
+        elif self._link == "log":
+            dmu_deta = mu
+        elif self._link == "logistic":
+            eps = np.finfo(float).eps
+            mu_c = np.clip(mu, eps, 1.0 - eps)
+            dmu_deta = mu_c * (1.0 - mu_c)
+        elif self._link == "probit":
+            # eta = Phi^{-1}(mu); dmu/deta = phi(eta)
+            eta = stats.norm.ppf(np.clip(mu, 1e-12, 1.0 - 1e-12))
+            dmu_deta = stats.norm.pdf(eta)
+        elif self._link == "complementary_log_log":
+            mu_c = np.clip(mu, 1e-12, 1.0 - 1e-12)
+            eta = np.log(-np.log(1.0 - mu_c))
+            dmu_deta = np.exp(eta) * (1.0 - mu_c)
+        elif self._link == "reciprocal":
+            dmu_deta = -mu * mu
+        elif self._link == "reciprocal_squared":
+            dmu_deta = -0.5 * mu * mu * mu
+        else:
+            raise NotImplementedError(
+                f"robust_covariance does not yet support the {self._link!r} link."
+            )
+
+        weight = dmu_deta * dmu_deta / v
+        score = (y - mu) * dmu_deta / v
+        return np.asarray(weight, dtype=float), np.asarray(score, dtype=float)
+
+    def robust_covariance(self, cov_type: str = "HC0") -> FloatArray:
+        """Sandwich (Huber-White) covariance estimator.
+
+        Returns the heteroscedasticity-consistent covariance for the
+        parameter vector defined by ``_design_matrix``:
+
+            V = (X' W X)^{-1} (X' diag(s_i^2) X) (X' W X)^{-1}
+
+        where ``W_ii = (dmu/deta)_i^2 / V(mu_i)`` is the IRLS weight
+        and ``s_i = (y_i - mu_i) (dmu/deta)_i / V(mu_i)`` is the
+        per-observation score on the ``eta`` scale. ``mu`` is the
+        fitted mean from this GAM. The dispersion drops out, so the
+        estimator is identical for known and estimated dispersion.
+
+        For canonical-link GLMs without regularization, the result
+        matches ``statsmodels.GLM(...).fit(cov_type="HC0").cov_params()``
+        on the same parametrization to numerical precision. Penalized
+        fits return the *naive* sandwich at the penalized point
+        estimate; for proper penalized inference a bread that includes
+        the penalty Hessian is needed (future work).
+
+        Parameters
+        ----------
+        cov_type : ``"HC0"`` or ``"HC1"``
+            ``"HC0"`` is the standard White estimator. ``"HC1"``
+            multiplies by ``n / (n - p)`` for a small-sample
+            correction (matches Stata / statsmodels HC1).
+
+        Returns
+        -------
+        V : (p, p) ndarray
+            Covariance for the parameter vector
+            ``(intercept, linear..., categorical contrasts...)``,
+            in the order produced by ``_design_matrix()``.
+
+        Raises
+        ------
+        AttributeError
+            If the model has not been fit.
+        NotImplementedError
+            For spline features, covariate classes, observation
+            weights, the quantile or huber families, or unsupported
+            ``cov_type`` values.
+        """
+        if cov_type not in ("HC0", "HC1"):
+            raise NotImplementedError(
+                f"cov_type={cov_type!r} not supported. Use 'HC0' or 'HC1'."
+            )
+        if not self._fitted:
+            raise AttributeError("Model not yet fit.")
+        if self._weights is not None:
+            raise NotImplementedError(
+                "robust_covariance does not yet support observation weights."
+            )
+        if self._family in ("quantile", "huber"):
+            raise NotImplementedError(
+                f"robust_covariance does not yet support family={self._family!r}; "
+                "M-estimator sandwich SEs are tracked separately."
+            )
+
+        D, _ = self._design_matrix()
+        mu = self._eval_inv_link(self._num_features * self.f_bar)
+        weight, score = self._glm_irls_terms(self._y, mu)
+
+        bread = D.T @ (weight[:, None] * D)
+        meat = D.T @ ((score * score)[:, None] * D)
+        bread_inv = linalg.inv(bread)
+        cov = bread_inv @ meat @ bread_inv
+
+        if cov_type == "HC1":
+            n = self._num_obs
+            p = D.shape[1]
+            if n > p:
+                cov = cov * (n / (n - p))
+
+        return np.asarray(cov, dtype=float)
+
     def confidence_intervals(
         self, X: pd.DataFrame, prediction: bool = False, width: float = 0.95
     ) -> FloatArray:

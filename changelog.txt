@@ -1,3 +1,40 @@
+2026-04-26 : Sandwich (Huber-White) covariance estimator
+- GAM.robust_covariance(cov_type="HC0") returns the heteroscedasticity-
+  consistent sandwich estimator
+      V = (X' W X)^{-1} (X' diag(s_i^2) X) (X' W X)^{-1}
+  for the parameter vector defined by GAM._design_matrix(). Per
+  observation w_i = (dmu/deta)_i^2 / V(mu_i) is the IRLS weight and
+  s_i = (y_i - mu_i) (dmu/deta)_i / V(mu_i) is the eta-scale score;
+  mu is read off the fitted model. The dispersion drops out, so the
+  estimator is identical for known and estimated dispersion. cov_type=
+  "HC1" applies the n / (n - p) small-sample correction.
+- _design_matrix(X=None) builds an intercept + raw-linear + treatment-
+  contrast (drop lex-first level) categorical design that matches
+  statsmodels / patsy parametrization, so robust_covariance lines up
+  term-by-term with statsmodels.GLM(...).fit(cov_type="HC0").cov_params().
+- Supported families: normal, binomial, poisson, gamma, inverse_gaussian.
+  Spline features, binomial covariate classes, observation weights, and
+  the quantile / huber families raise NotImplementedError up front --
+  follow-on issues will extend coverage. Penalized fits return the
+  naive sandwich at the penalized point estimate; a bread that includes
+  the penalty Hessian is future work and is also flagged in the
+  docstring.
+- Foundational dependency for issue #35 (quasi-likelihood families):
+  with sandwich SEs in place, quasi_normal / quasi_binomial /
+  quasi_poisson can ship without inference being a separate workstream.
+- Tests in tests/test_robust_covariance.py: (a) inject statsmodels'
+  converged mu into gamdist and compare cov_params to numerical
+  precision (rtol=1e-10) -- pins the sandwich formula independent of
+  the optimizer, since gamdist's ADMM stops at eps_abs=eps_rel=1e-3
+  while statsmodels' IRLS goes to machine precision; (b) end-to-end
+  fit-and-compare with looser tolerances (rtol=5e-2) on the same three
+  families; (c) HC0 -> HC1 scaling identity; (d) design-matrix layout
+  invariants; (e) NotImplementedError gates for splines, the quantile
+  family, unsupported cov_type, and unfitted-model access. statsmodels
+  is gated via pytest.importorskip so the test module is silently
+  skipped in environments without it (statsmodels is not added to the
+  package's runtime or dev dependencies). Closes #34.
+
 2026-04-26 : Huber (M-estimator) family for robust continuous regression
 - GAM now accepts family="huber" with a required positive `delta`
   parameter in the units of `y`. Only link="identity" is supported
