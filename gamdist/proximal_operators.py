@@ -308,29 +308,42 @@ def _prox_inv_gaussian_reciprocal_squared_scalar(xx: Sequence[float]) -> float:
     y = xx[2]
     w: float | None = xx[3] if len(xx) >= 4 else None
 
+    w_eff = 1.0 if w is None else float(w)
+
+    def obj(z: float) -> float:
+        eta = z * z
+        return 0.5 * w_eff * y * eta - w_eff * z + 0.5 * mu * (eta - v) * (eta - v)
+
     tol = 1e-3
     max_its = 100
 
     z = 1.0
-    if w is None:
-        w_y_minus_mu_v = 0.5 * y - mu * v
-    else:
-        w_y_minus_mu_v = 0.5 * w * y - mu * v
+    w_y_minus_mu_v = 0.5 * w_eff * y - mu * v
 
     for _ in range(max_its):
-        if w is None:
-            num = mu * z * z * z + w_y_minus_mu_v * z - 0.5
-            denom = 3 * mu * z * z + w_y_minus_mu_v
-        else:
-            num = mu * z * z * z + w_y_minus_mu_v * z - 0.5 * w
-            denom = 3 * mu * z * z + w_y_minus_mu_v
+        num = mu * z * z * z + w_y_minus_mu_v * z - 0.5 * w_eff
+        denom = 3 * mu * z * z + w_y_minus_mu_v
 
         dz = num / denom
-        z -= dz
         if abs(dz) < tol:
             return z * z
+        # Damped Newton: backtrack until the objective decreases. The prox is
+        # convex in eta = z^2 but not in z, so the Newton step in z is not
+        # always a descent direction; if backtracking can't find one we fall
+        # through to the bracketed minimization below.
+        f_curr = obj(z)
+        step = 1.0
+        z_new = z - dz
+        while obj(z_new) >= f_curr and step > 1e-12:
+            step *= 0.5
+            z_new = z - step * dz
+        z = z_new
 
-    raise ValueError("Dual variable update failed to converge.")
+    # Newton failed to converge in max_its; fall back to a bracketed 1-D
+    # minimization, matching the pattern used by the binomial / poisson
+    # canonical-link solvers.
+    z_opt = float(minimize_scalar(obj).x)
+    return z_opt * z_opt
 
 
 def _prox_inv_gaussian_reciprocal_squared(

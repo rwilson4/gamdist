@@ -1,3 +1,13 @@
+2026-04-26 : Damped Newton fallback for inv_gaussian + reciprocal_squared prox
+- _prox_inv_gaussian_reciprocal_squared_scalar previously raised
+  ValueError when undamped Newton failed to converge in 100 iterations,
+  inconsistent with the binomial / poisson canonical-link solvers which
+  fall back to scipy.optimize.minimize_scalar. The prox is convex in
+  eta = z^2 but not in z, so the Newton step in z is not always a
+  descent direction. Now uses damped Newton with backtracking on the
+  objective (matching _prox_binomial_logit_scalar) and falls through to
+  minimize_scalar if Newton can't make progress. Closes #42.
+
 2026-04-26 : Rename network_lasso edge columns country1/country2 to node1/node2
 - _CategoricalFeature now expects the edges DataFrame for
   regularization={"network_lasso": {"edges": ...}} to use the
