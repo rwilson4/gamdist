@@ -30,6 +30,9 @@ jobs:
       - name: Lint with ruff
         run: uv run --python ${{ matrix.python-version }} ruff check gamdist tests
 
+      - name: Format check with ruff
+        run: uv run --python ${{ matrix.python-version }} ruff format --check gamdist tests
+
       - name: Type-check with mypy
         run: uv run --python ${{ matrix.python-version }} mypy gamdist
 

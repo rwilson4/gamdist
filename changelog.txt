@@ -1,3 +1,14 @@
+2026-04-26 : Adopt ruff format
+- Wire `ruff format` in as the project's formatter. `[tool.ruff]`
+  line-length drops from 100 to 88 (ruff format / black default) and
+  a `[tool.ruff.format]` block is added. CI (`.github/workflows/
+  ci.yml`) gains a "Format check with ruff" step alongside the
+  existing ruff lint / mypy / pytest steps; PRs that introduce
+  unformatted code now fail. CLAUDE.md's Install / run and Tests /
+  CI sections mention the formatter. Closes #55. One-shot reformat
+  of the existing tree (12 files, ~300/-189) lands in the same
+  commit so CI passes from the moment the check is enabled.
+
 2026-04-26 : Reformulate inv_gaussian + reciprocal_squared prox in eta space
 - _prox_inv_gaussian_reciprocal_squared_scalar now iterates Newton in
   eta = z^2, the natural convex coordinate for this prox. The Hessian
