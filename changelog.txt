@@ -1,3 +1,41 @@
+2026-04-26 : Quantile (pinball-loss) family for conditional quantile regression
+- GAM now accepts family="quantile" with a required tau parameter in
+  (0, 1). Only link="identity" is supported (the M-estimator framing
+  is convex only at the identity link); other links raise up front.
+  tau=0.5 fits the conditional median; tau in (0, 1) fits an arbitrary
+  conditional quantile.
+- Pinball loss rho_tau(r) = max(tau*r, (tau-1)*r) plugs into the ADMM
+  loop as a new entry in the (family, link) prox dispatch:
+  _prox_quantile_identity in gamdist/proximal_operators.py is the
+  closed-form shifted-soft-threshold
+      x* = v + w*tau/mu        if y > v + w*tau/mu
+      x* = v - w*(1-tau)/mu    if y < v - w*(1-tau)/mu
+      x* = y                   otherwise
+  i.e. the same shape as the L1 prox with asymmetric thresholds.
+  No ADMM-loop changes; per-feature primal steps see only fpumz and
+  rho exactly as before.
+- The training offset (which anchors the model's average prediction,
+  since every feature is mean-zero) is set to np.quantile(y, tau)
+  for the quantile family instead of mean(y). Without this the
+  intercept is locked to the wrong target for tau != 0.5 and ADMM
+  cannot reach the correct fit.
+- _deviance_from_mu treats 2 * sum(rho_tau(y - mu)) as the family's
+  "deviance" (the M-estimator analogue of -2 * log-likelihood used
+  by the convergence trace and AIC/BIC summaries); dispersion() is
+  fixed at 1.0. quantile is added to FAMILIES_WITH_KNOWN_DISPERSIONS
+  so AIC/BIC don't add a phantom DOF for an estimated dispersion.
+- tau is persisted in save/load; older pickles default tau to None.
+- Tests in tests/test_proximal_operators.py cover the prox vs.
+  scipy.optimize.minimize_scalar on the same scalar objective across
+  tau values, the shifted-soft-threshold thresholds, the weighted
+  variant, and the median collapse to the symmetric L1 prox.
+  tests/test_quantile.py adds an end-to-end recovery test on
+  heteroskedastic data y = x + (1+x)*N(0,1) for tau in {0.1, 0.5, 0.9}
+  (true conditional quantile is linear in x), an empirical-coverage
+  check on a held-out sample for tau in {0.2, 0.8}, API validation
+  (missing / out-of-range tau, non-identity link), the deviance =
+  2 * sum(pinball) identity, and a save/load round-trip. Closes #22.
+
 2026-04-26 : Network ridge regularizer for categorical features
 - _CategoricalFeature now accepts
       regularization={"network_ridge": {"coef": lambda, "edges": edges}}

@@ -45,7 +45,13 @@ from .spline_feature import _SplineFeature
 FloatArray = npt.NDArray[np.float64]
 
 Family = Literal[
-    "normal", "binomial", "poisson", "gamma", "exponential", "inverse_gaussian"
+    "normal",
+    "binomial",
+    "poisson",
+    "gamma",
+    "exponential",
+    "inverse_gaussian",
+    "quantile",
 ]
 Link = Literal[
     "identity",
@@ -62,7 +68,15 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # tracker and changelog.txt respectively; see
 # https://github.com/rwilson4/gamdist/issues for the current roadmap.
 
-FAMILIES = ["normal", "binomial", "poisson", "gamma", "exponential", "inverse_gaussian"]
+FAMILIES = [
+    "normal",
+    "binomial",
+    "poisson",
+    "gamma",
+    "exponential",
+    "inverse_gaussian",
+    "quantile",
+]
 
 LINKS = [
     "identity",
@@ -74,7 +88,7 @@ LINKS = [
     "reciprocal_squared",
 ]
 
-FAMILIES_WITH_KNOWN_DISPERSIONS = {"binomial": 1, "poisson": 1}
+FAMILIES_WITH_KNOWN_DISPERSIONS = {"binomial": 1, "poisson": 1, "quantile": 1}
 
 CANONICAL_LINKS = {
     "normal": "identity",
@@ -82,6 +96,7 @@ CANONICAL_LINKS = {
     "poisson": "log",
     "gamma": "reciprocal",
     "inverse_gaussian": "reciprocal_squared",
+    "quantile": "identity",
 }
 # Non-canonical but common link/family combinations include:
 # Binomial: probit and complementary log-log
@@ -211,6 +226,7 @@ class GAM:
         estimate_overdispersion: bool = False,
         name: str | None = None,
         load_from_file: str | None = None,
+        tau: float | None = None,
     ) -> None:
         """Generalized Additive Model
 
@@ -293,6 +309,10 @@ class GAM:
              the left off by saving results (see the save_flag in .fit)
              and loading them to start the next iterations. Specifying
              this option supercedes all other parameters.
+         tau : float or None (optional)
+             Quantile level in (0, 1) for ``family='quantile'`` (pinball
+             loss). ``tau=0.5`` recovers the conditional median.
+             Required when ``family='quantile'`` and ignored otherwise.
 
         Returns
         -------
@@ -321,6 +341,20 @@ class GAM:
             self._link = link
         else:
             raise ValueError(f"{link} link not supported")
+
+        if self._family == "quantile":
+            if tau is None:
+                raise ValueError("tau must be specified for the quantile family.")
+            if not (0.0 < tau < 1.0):
+                raise ValueError(f"tau must be in (0, 1); got {tau}.")
+            if self._link != "identity":
+                raise ValueError(
+                    "quantile family requires link='identity'; "
+                    f"got link={self._link!r}."
+                )
+            self._tau: float | None = float(tau)
+        else:
+            self._tau = None
 
         if dispersion is not None:
             self._known_dispersion = True
@@ -372,6 +406,7 @@ class GAM:
         mv["known_dispersion"] = self._known_dispersion
         if self._known_dispersion:
             mv["dispersion"] = self._dispersion
+        mv["tau"] = self._tau
 
         mv["estimate_overdispersion"] = self._estimate_overdispersion
         mv["offset"] = self._offset
@@ -418,6 +453,7 @@ class GAM:
         self._known_dispersion = mv["known_dispersion"]
         if self._known_dispersion:
             self._dispersion = mv["dispersion"]
+        self._tau = mv.get("tau")
 
         self._estimate_overdispersion = mv["estimate_overdispersion"]
         self._offset = mv["offset"]
@@ -718,7 +754,15 @@ class GAM:
         else:
             self._has_covariate_classes = False
             self._covariate_class_sizes = None
-            self._offset = float(self._eval_link(np.mean(self._y)))
+            if self._family == "quantile":
+                # The offset anchors the model's average prediction over
+                # training data, since features are mean-zero. For
+                # quantile regression that anchor must be the marginal
+                # tau-quantile, not the mean.
+                assert self._tau is not None
+                self._offset = float(np.quantile(self._y, self._tau))
+            else:
+                self._offset = float(self._eval_link(np.mean(self._y)))
 
         fj: dict[str, FloatArray] = {}
 
@@ -954,6 +998,14 @@ class GAM:
                 po._prox_inv_gaussian_reciprocal_squared
                 if self._link == "reciprocal_squared"
                 else po._prox_inv_gaussian
+            )
+        elif self._family == "quantile":
+            return (1.0 / N) * po._prox_quantile_identity(
+                N * upf,
+                self._rho,
+                self._y,
+                self._tau,  # type: ignore[arg-type]
+                w=self._weights,
             )
         else:
             raise ValueError(
@@ -1451,6 +1503,18 @@ class GAM:
             if w is None:
                 return float(np.sum((y - mu) * (y - mu) / (mu * mu * y)))
             return float(w.dot((y - mu) * (y - mu) / (mu * mu * y)))
+        if self._family == "quantile":
+            # Pinball loss: rho_tau(r) = max(tau*r, (tau-1)*r). The
+            # quantile family has no proper likelihood, so "deviance"
+            # here is twice the empirical pinball loss -- the
+            # M-estimator analogue of -2 * log-likelihood used by the
+            # ADMM convergence trace and goodness-of-fit summaries.
+            tau = float(self._tau)  # type: ignore[arg-type]
+            r = y - mu
+            term = np.maximum(tau * r, (tau - 1.0) * r)
+            if w is None:
+                return float(2.0 * np.sum(term))
+            return float(2.0 * w.dot(term))
         raise ValueError(f"Unsupported family {self._family!r}")
 
     def dispersion(self, formula: str = "deviance") -> float:
@@ -1510,6 +1574,10 @@ class GAM:
             if self._known_dispersion:
                 return float(self._dispersion)
             return float(self.deviance() / (self._num_obs - self.dof()))
+        if self._family == "quantile":
+            # Pinball loss is an M-estimator, not a likelihood; there
+            # is no dispersion to estimate.
+            return 1.0
         raise ValueError(f"Unsupported family {self._family!r}")
 
     def _binomial_overdispersion(self, formula: str | None = None) -> float:
