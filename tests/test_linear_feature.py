@@ -88,3 +88,8 @@ def test_dof_and_num_params() -> None:
     feat.initialize(np.array([0.0, 1.0]))
     assert feat.num_params() == 1
     assert feat.dof() == 1.0
+
+
+def test_l1_regularization_rejected() -> None:
+    with pytest.raises(ValueError, match="L1 regularization on linear features"):
+        _LinearFeature(name="x", regularization={"l1": {"coef": 1.0}})

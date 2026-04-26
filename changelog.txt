@@ -1,3 +1,12 @@
+2026-04-26 : Reject l1 regularization on linear features
+- _LinearFeature.__init__ now raises ValueError if the user passes
+  regularization={"l1": ...}. The L1 coefficient was previously stored
+  but silently dropped in optimize() — users got a plain ridge / no-
+  penalty fit and no warning. The error message points at the
+  categorical-feature L1 path for users who need L1 today, and at
+  issue #53 for the follow-up that will implement L1 properly on
+  linear features. Closes #20.
+
 2026-04-26 : Damped Newton fallback for inv_gaussian + reciprocal_squared prox
 - _prox_inv_gaussian_reciprocal_squared_scalar previously raised
   ValueError when undamped Newton failed to converge in 100 iterations,

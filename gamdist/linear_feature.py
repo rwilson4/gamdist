@@ -54,11 +54,13 @@ class _LinearFeature(_Feature):
         transform : callable
             Transformation applied to the data (e.g. ``np.log1p``).
         regularization : dict
-            Description of regularization terms. Two kinds of
-            regularization are supported: ``l1`` and ``l2``. Each entry's
-            value is a dict containing a numeric ``coef``. The top-level
+            Description of regularization terms. Currently only ``l2``
+            (ridge) is supported on linear features; the entry's value
+            is a dict containing a numeric ``coef``. The top-level
             ``prior`` key (if present) provides a scalar prior estimate
-            for the slope.
+            for the slope. ``l1`` is not yet implemented for this
+            feature type — see issue #53; for L1 today, use a
+            categorical feature.
         load_from_file : str
             If provided, restore parameters from this pickle path. All
             other parameters are ignored when loading.
@@ -92,11 +94,11 @@ class _LinearFeature(_Feature):
 
         if regularization is not None:
             if "l1" in regularization:
-                self._has_l1 = True
-                if "coef" in regularization["l1"]:
-                    self._coef1 = float(regularization["l1"]["coef"])
-                else:
-                    raise ValueError("No coefficient specified for l1 regularization term.")
+                raise ValueError(
+                    "L1 regularization on linear features is not implemented "
+                    "(see issue #53). Use a categorical feature for L1 today, "
+                    "or restrict this feature's regularization to 'l2'."
+                )
 
             if "l2" in regularization:
                 self._has_l2 = True
