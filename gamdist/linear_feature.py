@@ -518,6 +518,20 @@ class _LinearFeature(_Feature):
             1.0 + self._xmean * self._xmean
         ) * ybar * ybar
 
+    def _apply_adaptive_l1(self, gamma: float, eps: float) -> bool:
+        """Rewrite ``self._coef1`` as the adaptive-lasso weight from the pilot.
+
+        With a single slope ``m``, the new L1 coefficient is
+        ``base / (|m| + eps) ** gamma``. The next ``initialize()`` call
+        will rescale this by ``smoothing`` into ``self._lambda1``.
+        Returns True iff the feature has a non-zero L1 base coefficient.
+        """
+        if not self._has_l1 or self._coef1 == 0.0:
+            return False
+        pilot_dev = abs(float(self._m))
+        self._coef1 = float(self._coef1) / (pilot_dev + eps) ** gamma
+        return True
+
     def num_params(self) -> int:
         """Number of parameters in this feature."""
         return 1

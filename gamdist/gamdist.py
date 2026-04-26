@@ -2482,3 +2482,85 @@ class GAM:
 
         for _name, feature in self._features.items():
             print(str(feature))
+
+
+def fit_adaptive_lasso(
+    gam: GAM,
+    X: pd.DataFrame,
+    y: npt.NDArray[Any],
+    *,
+    gamma: float = 1.0,
+    eps: float = 1e-6,
+    **fit_kwargs: Any,
+) -> GAM:
+    """Fit ``gam`` via the two-stage adaptive lasso (Zou, 2006).
+
+    The first stage fits ``gam`` to ``(X, y)`` using whatever L1
+    regularization the user configured on each feature -- producing a
+    pilot estimate of every coefficient. The second stage rewrites each
+    L1-regularized feature's per-coefficient L1 weight to ``base /
+    (|pilot| + eps) ** gamma`` and refits. Coefficients with large pilot
+    magnitudes are penalized less; tiny pilots (likely noise) are
+    penalized more, recovering the "oracle" sparsity pattern with less
+    bias on the truly active coefficients than plain L1.
+
+    Both stages are convex (they are ordinary weighted-L1 fits at fixed
+    weights), so this is just a thin wrapper over two ``GAM.fit`` calls.
+
+    Parameters
+    ----------
+    gam : GAM
+        Fully configured but not-yet-fit GAM. At least one feature must
+        carry an ``regularization={"l1": {"coef": ...}}`` configuration;
+        other features and other regularizers (l2, group_lasso, ...)
+        ride along untouched. The same ``gam`` object is mutated in
+        place and returned.
+    X, y : data
+        Forwarded to both ``gam.fit`` calls.
+    gamma : float
+        Adaptive-lasso exponent (typically 1.0). Larger ``gamma`` makes
+        the second-stage weights swing harder around the pilot
+        magnitudes.
+    eps : float
+        Stabilizer added to the pilot magnitude before exponentiation,
+        so a pilot of exactly zero produces a finite (though large)
+        second-stage weight rather than a divide-by-zero.
+    **fit_kwargs
+        Forwarded to both ``gam.fit`` calls. Both stages see the same
+        ``smoothing``, ``max_its``, ``weights``, etc.
+
+    Returns
+    -------
+    gam : GAM
+        The same model, now fit with adaptive L1 weights.
+    """
+    if gamma <= 0.0:
+        raise ValueError(f"gamma must be positive; got {gamma}.")
+    if eps <= 0.0:
+        raise ValueError(f"eps must be positive; got {eps}.")
+
+    has_l1 = any(getattr(f, "_has_l1", False) for f in gam._features.values())
+    if not has_l1:
+        raise ValueError(
+            "fit_adaptive_lasso requires at least one feature with "
+            'regularization={"l1": ...}; without an L1 term to reweight, '
+            "the second stage is identical to the first."
+        )
+
+    gam.fit(X, y, **fit_kwargs)
+
+    rewrote_any = False
+    for feature in gam._features.values():
+        apply = getattr(feature, "_apply_adaptive_l1", None)
+        if apply is None:
+            continue
+        if apply(gamma, eps):
+            rewrote_any = True
+    if not rewrote_any:
+        # Defensive: should be impossible given the has_l1 guard above,
+        # but feature subclasses without `_apply_adaptive_l1` would land
+        # here. Skip the second fit rather than producing identical output.
+        return gam
+
+    gam.fit(X, y, **fit_kwargs)
+    return gam

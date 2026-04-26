@@ -108,6 +108,7 @@ class _CategoricalFeature(_Feature):
         self._has_group_lasso = False
         self._has_group_lasso_inf = False
         self._has_prior = False
+        self._prior_keys: set[Any] | None = None
         self._coef1: float | dict[Any, float] = 0.0
         self._coef2: float | dict[Any, float] = 0.0
         self._coef_huber: float | dict[Any, float] = 0.0
@@ -225,6 +226,14 @@ class _CategoricalFeature(_Feature):
             if (self._has_l1 or self._has_l2) and "prior" in regularization:
                 self._has_prior = True
                 self._prior: Any = regularization["prior"]
+                # Track the user-supplied prior keys separately so
+                # `_compute_lambda` can apply uniform-coef penalties only to
+                # the categories the user named, even after `initialize`
+                # rewrites `self._prior` as a dense vector. Without this,
+                # a second `initialize()` call (e.g. the refit stage of
+                # adaptive lasso) sees `self._prior` as an ndarray and the
+                # membership / iteration logic below misbehaves.
+                self._prior_keys = set(regularization["prior"].keys())
 
         self._has_constraints = False
         self._constraint_lower: float = -np.inf
@@ -413,7 +422,15 @@ class _CategoricalFeature(_Feature):
                             float(value) * smoothing
                         )
 
-        if (self._has_l1 or self._has_l2) and self._has_prior:
+        # Idempotent: a second `initialize()` call (for example, the
+        # adaptive-lasso refit) would otherwise try to .items() an
+        # ndarray. The original prior keys live in `_prior_keys`; we
+        # just keep the existing vector when `_prior` is already one.
+        if (
+            (self._has_l1 or self._has_l2)
+            and self._has_prior
+            and isinstance(self._prior, dict)
+        ):
             prior_vec = np.zeros(self._num_categories)
             for key, value in self._prior.items():
                 prior_vec[self._category_hash[key]] = value
@@ -455,16 +472,17 @@ class _CategoricalFeature(_Feature):
     ) -> FloatArray:
         """Build the per-category regularization-weight vector."""
         result = np.zeros(self._num_categories)
+        prior_keys = self._prior_keys if self._has_prior else None
         if isinstance(coef, (int, float)):
             scaled = float(coef) * smoothing
-            if self._has_prior:
-                for key in self._prior:
+            if prior_keys is not None:
+                for key in prior_keys:
                     result[self._category_hash[key]] = scaled
             else:
                 result[:] = scaled
         else:
             for key, value in coef.items():
-                if self._has_prior and key not in self._prior:
+                if prior_keys is not None and key not in prior_keys:
                     continue
                 result[self._category_hash[key]] = float(value) * smoothing
         return result
@@ -522,6 +540,8 @@ class _CategoricalFeature(_Feature):
             mv["lambda_huber_vec"] = self._lambda_huber_vec
         if self._has_prior:
             mv["prior"] = self._prior
+            if self._prior_keys is not None:
+                mv["prior_keys"] = self._prior_keys
         if self._has_constraints:
             mv["has_constraints"] = True
             mv["constraint_lower"] = self._constraint_lower
@@ -595,6 +615,18 @@ class _CategoricalFeature(_Feature):
         self._has_prior = mv["has_prior"]
         if self._has_prior:
             self._prior = mv["prior"]
+            # prior_keys persisted from a later release; older pickles only
+            # have the vector form, so reconstruct from non-zero entries.
+            if "prior_keys" in mv:
+                self._prior_keys = mv["prior_keys"]
+            else:
+                self._prior_keys = {
+                    cat
+                    for cat, idx in self._category_hash.items()
+                    if self._prior[idx] != 0.0
+                }
+        else:
+            self._prior_keys = None
         # has_constraints added later; default to False for older pickles.
         self._has_constraints = mv.get("has_constraints", False)
         if self._has_constraints:
@@ -792,6 +824,40 @@ class _CategoricalFeature(_Feature):
         """Compute this feature's contribution to the dual residual tolerance."""
         Aty = self._compute_Atz(y)
         return float(Aty.dot(Aty))
+
+    def _apply_adaptive_l1(self, gamma: float, eps: float) -> bool:
+        """Rewrite ``self._coef1`` as adaptive-lasso weights from the pilot.
+
+        For each category that the original L1 configuration touched, the
+        new per-category coefficient is ``base_c / (|p_c - prior_c| + eps)
+        ** gamma``. Categories that the user did not penalize (``base_c
+        == 0``) stay at zero. Returns True iff this feature contributed an
+        L1 penalty that was rewritten; the caller uses that to validate
+        that adaptive-lasso has something to do.
+        """
+        if not self._has_l1:
+            return False
+        base = self._coef1
+        if self._has_prior:
+            prior_vec = self._prior
+        else:
+            prior_vec = np.zeros(self._num_categories)
+        new_coef: dict[Any, float] = {}
+        rewrote = False
+        for cat, idx in self._category_hash.items():
+            if isinstance(base, dict):
+                base_c = float(base.get(cat, 0.0))
+            else:
+                base_c = float(base)
+            if base_c == 0.0:
+                continue
+            if self._prior_keys is not None and cat not in self._prior_keys:
+                continue
+            deviation = abs(float(self.p[idx]) - float(prior_vec[idx]))
+            new_coef[cat] = base_c / (deviation + eps) ** gamma
+            rewrote = True
+        self._coef1 = new_coef
+        return rewrote
 
     def num_params(self) -> int:
         """Number of parameters in this feature."""
