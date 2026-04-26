@@ -1,3 +1,29 @@
+2026-04-26 : L1 regularization for linear features
+- _LinearFeature now accepts regularization={"l1": {"coef": lambda}}.
+  The previous option-B rejection (added in #20) is removed; the
+  matching error message in __init__ is replaced with the standard
+  "no coefficient" check used by the other regularizers.
+- The penalty lambda * |m| reduces the per-feature primal step to a
+  closed-form 1-D soft-threshold on b = x_centered^T y with threshold
+  lambda1 / rho. With ridge the elastic-net closed form drops out:
+      m = soft(b, lambda1/rho) / (xtx + 2*lambda2/rho).
+  When group_lasso is also active, its threshold (lambda_gl *
+  sqrt(xtx) / rho) adds to the L1 threshold -- both penalize |m| at
+  the origin and combine additively. No cvxpy on the linear path;
+  the existing ridge-only fast path is unchanged when L1 is off.
+- Smoothing scaling, save/load, and per-feature state plumbing for
+  L1 (_has_l1, _coef1, _lambda1) were already in place from the
+  pre-rejection era and are reused as-is.
+- Tests in tests/test_linear_l1.py cover: missing-coef error,
+  smoothing scaling, lambda=0 parity with the unpenalized solve,
+  huge-lambda zeroing the slope, intermediate-lambda shrinkage,
+  the soft-threshold closed form, the elastic-net closed form when
+  combined with l2, the additive-threshold closed form when combined
+  with group_lasso, save/load round-trip, and an end-to-end GAM test
+  where the noise feature shrinks to <10% of the signal feature's
+  norm. The rejection assertion in tests/test_linear_feature.py is
+  flipped to assert the missing-coef path instead. Closes #53.
+
 2026-04-26 : Reject non-convex (family, link) combinations up front
 - GAM.__init__ now validates (family, link) against an explicit
   SUPPORTED_FAMILY_LINK_PAIRS allow-list (the canonical pairs from
