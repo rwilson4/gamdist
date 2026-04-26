@@ -106,9 +106,17 @@ CANONICAL_LINKS = {
     "quantile": "identity",
     "huber": "identity",
 }
-# Non-canonical but common link/family combinations include:
-# Binomial: probit and complementary log-log
-# Gamma: identity and log
+
+# (family, link) pairs that have a real, convex proximal-operator
+# implementation. Convexity of every per-component subproblem is the
+# North Star (see CLAUDE.md): ``GAM`` rejects any other combination at
+# construction time so users find out before ``fit()`` runs. Any new
+# entry here needs (a) a proof that the prox subproblem is convex and
+# (b) a dedicated solver in ``proximal_operators.py`` -- the previous
+# silent ``scipy.optimize.minimize_scalar`` fallback is gone.
+SUPPORTED_FAMILY_LINK_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    CANONICAL_LINKS.items()
+)
 
 
 def _plot_convergence(
@@ -387,6 +395,16 @@ class GAM:
         else:
             self._delta = None
 
+        if (self._family, self._link) not in SUPPORTED_FAMILY_LINK_PAIRS:
+            canonical = CANONICAL_LINKS[self._family]
+            raise ValueError(
+                f"({self._family!r}, {self._link!r}) is not a supported "
+                "(family, link) combination. Per the convexity-only design "
+                "(see CLAUDE.md), only pairs with a dedicated convex "
+                f"proximal-operator implementation are accepted; use "
+                f"link={canonical!r} for family={self._family!r}."
+            )
+
         if dispersion is not None:
             self._known_dispersion = True
             self._dispersion = dispersion
@@ -482,6 +500,16 @@ class GAM:
         self._filename = filename
         self._family = mv["family"]
         self._link = mv["link"]
+        if (self._family, self._link) not in SUPPORTED_FAMILY_LINK_PAIRS:
+            canonical = CANONICAL_LINKS.get(self._family, "<unknown>")
+            raise ValueError(
+                f"Saved model uses ({self._family!r}, {self._link!r}), which "
+                "is no longer a supported (family, link) combination. Per "
+                "the convexity-only design (see CLAUDE.md), only pairs "
+                "with a dedicated convex proximal-operator implementation "
+                "are accepted; refit with link="
+                f"{canonical!r} for family={self._family!r}."
+            )
         self._known_dispersion = mv["known_dispersion"]
         if self._known_dispersion:
             self._dispersion = mv["dispersion"]
@@ -998,21 +1026,18 @@ class GAM:
              Result of the above optimization problem.
         """
 
-        # Different prox operators have slightly different signatures (e.g. the
-        # binomial variant takes a covariate-class-sizes argument), so the
+        # ``__init__`` already restricted (family, link) to the
+        # SUPPORTED_FAMILY_LINK_PAIRS allow-list, so every branch below
+        # has a dedicated convex prox; there is no fallback path.
+        # Different prox operators have slightly different signatures
+        # (the binomial variant takes a covariate-class-sizes argument,
+        # quantile / huber take an extra shape parameter), so the
         # dispatch is typed as Any to keep mypy quiet here.
         prox: Any
         if self._family == "normal":
-            if self._link == "identity":
-                prox = po._prox_normal_identity
-            else:
-                prox = po._prox_normal
+            prox = po._prox_normal_identity
         elif self._family == "binomial":
-            if self._link == "logistic":
-                prox = po._prox_binomial_logit
-            else:
-                prox = po._prox_binomial
-
+            prox = po._prox_binomial_logit
             if self._has_covariate_classes:
                 return (1.0 / N) * prox(
                     N * upf,
@@ -1022,21 +1047,12 @@ class GAM:
                     self._weights,
                     self._eval_inv_link,
                 )
-
         elif self._family == "poisson":
-            prox = po._prox_poisson_log if self._link == "log" else po._prox_poisson
+            prox = po._prox_poisson_log
         elif self._family == "gamma":
-            prox = (
-                po._prox_gamma_reciprocal
-                if self._link == "reciprocal"
-                else po._prox_gamma
-            )
+            prox = po._prox_gamma_reciprocal
         elif self._family == "inverse_gaussian":
-            prox = (
-                po._prox_inv_gaussian_reciprocal_squared
-                if self._link == "reciprocal_squared"
-                else po._prox_inv_gaussian
-            )
+            prox = po._prox_inv_gaussian_reciprocal_squared
         elif self._family == "quantile":
             return (1.0 / N) * po._prox_quantile_identity(
                 N * upf,

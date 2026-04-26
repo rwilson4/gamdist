@@ -1,3 +1,55 @@
+2026-04-26 : Reject non-convex (family, link) combinations up front
+- GAM.__init__ now validates (family, link) against an explicit
+  SUPPORTED_FAMILY_LINK_PAIRS allow-list (the canonical pairs from
+  CANONICAL_LINKS) and raises ValueError naming the unsupported pair
+  and the canonical link to use. Previously, non-canonical combinations
+  routed through a silent scipy.optimize.minimize_scalar fallback in
+  proximal_operators.py with no convexity guarantee, contradicting the
+  convexity-only design (see CLAUDE.md).
+- Removed the fallback prox functions _prox_normal, _prox_binomial,
+  _prox_poisson, _prox_gamma, and _prox_inv_gaussian from
+  proximal_operators.py. Each was the non-canonical-link sibling of the
+  corresponding canonical-link solver and existed only to invoke
+  minimize_scalar per observation, an interface that hides non-convex
+  problems behind best-effort scalar minimization. The canonical-link
+  solvers (_prox_normal_identity, _prox_binomial_logit,
+  _prox_poisson_log, _prox_gamma_reciprocal, and
+  _prox_inv_gaussian_reciprocal_squared) and the quantile / huber
+  identity-link solvers are unchanged. The minimize_scalar fallback
+  inside _prox_binomial_logit_scalar / _prox_poisson_log_scalar (after
+  Newton fails to converge on the convex canonical objective) is
+  preserved -- it operates on a pair that's in the allow-list.
+- GAM._optimize now dispatches by family alone, since the link is
+  forced to its canonical value by construction-time validation. The
+  catch-all "Family X and Link Y not (yet) supported." branch is kept
+  as a defensive backstop but is unreachable from public API.
+- GAM._load also re-validates the (family, link) pair so older pickles
+  saved with a non-canonical link fail loudly with the same error
+  message users get at construction.
+- Tests:
+    * tests/test_proximal_non_canonical.py is removed; its canonical-
+      link array-form / weighted-call coverage is folded into
+      tests/test_proximal_operators.py
+      (test_prox_poisson_log_array_with_weights,
+       test_prox_gamma_reciprocal_with_weights,
+       test_prox_inv_gaussian_reciprocal_squared_with_weights,
+       and the eta-space robustness / reference-minimization tests).
+    * tests/test_internals.py::test_link_function_round_trip drops the
+      probit and complementary_log_log cases; only canonical pairs
+      remain.
+    * tests/test_gam_api.py adds test_unsupported_family_link_raises
+      (parametrized across the previously silent fallback combinations:
+       normal+log, normal+logistic, binomial+probit, binomial+cloglog,
+       poisson+identity, gamma+log, gamma+identity, inv_gaussian+log),
+      a message-content assertion that names the canonical link, and a
+      check that family="exponential" + non-reciprocal link is rejected
+      after the gamma collapse.
+- Migration: callers who relied on a non-canonical link must switch to
+  the canonical link for that family. Per CLAUDE.md, adding a new
+  (family, link) entry to SUPPORTED_FAMILY_LINK_PAIRS requires both a
+  convexity proof and a dedicated solver in proximal_operators.py.
+  Closes #19.
+
 2026-04-26 : Sandwich (Huber-White) covariance estimator
 - GAM.robust_covariance(cov_type="HC0") returns the heteroscedasticity-
   consistent sandwich estimator
