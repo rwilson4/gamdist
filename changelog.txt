@@ -1,3 +1,24 @@
+2026-04-25 : Group lasso for categorical features
+- _CategoricalFeature now accepts
+      regularization={"group_lasso": {"coef": lambda}}
+  alongside the existing l1/l2/network_lasso options.
+- The penalty added to the cvxpy objective is
+      lambda * ||A q||_2  =  lambda * sqrt(q^T diag(ccs) q)
+  i.e. the L2 norm of the per-feature contribution vector. Driving
+  this to zero zeros out the entire feature, giving categorical-
+  variable selection: either every level participates in the model
+  or none does. Lambda is scaled by the global `smoothing` argument
+  (matching the other categorical penalties).
+- Persisted across save/load. Older pickles default has_group_lasso
+  to False on load.
+- Tests cover: lambda=0 parity with the unpenalized solve, huge
+  lambda zeroing the parameter vector, intermediate-lambda shrinkage,
+  smoothing scaling, save/load round-trip, missing-coef error path,
+  and an end-to-end variable-selection test (a noise feature shrinks
+  to <10% of the signal feature's norm).
+- Linear / spline group lasso and the l_inf variant remain on the
+  to-do list for follow-up.
+
 2026-04-25 : Parallel feature optimization
 - GAM.fit() now accepts an n_jobs argument. With n_jobs > 1 (or
   n_jobs=-1 for os.cpu_count()), the per-feature primal step in each
