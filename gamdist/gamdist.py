@@ -52,6 +52,7 @@ Family = Literal[
     "exponential",
     "inverse_gaussian",
     "quantile",
+    "huber",
 ]
 Link = Literal[
     "identity",
@@ -76,6 +77,7 @@ FAMILIES = [
     "exponential",
     "inverse_gaussian",
     "quantile",
+    "huber",
 ]
 
 LINKS = [
@@ -88,7 +90,12 @@ LINKS = [
     "reciprocal_squared",
 ]
 
-FAMILIES_WITH_KNOWN_DISPERSIONS = {"binomial": 1, "poisson": 1, "quantile": 1}
+FAMILIES_WITH_KNOWN_DISPERSIONS = {
+    "binomial": 1,
+    "poisson": 1,
+    "quantile": 1,
+    "huber": 1,
+}
 
 CANONICAL_LINKS = {
     "normal": "identity",
@@ -97,6 +104,7 @@ CANONICAL_LINKS = {
     "gamma": "reciprocal",
     "inverse_gaussian": "reciprocal_squared",
     "quantile": "identity",
+    "huber": "identity",
 }
 # Non-canonical but common link/family combinations include:
 # Binomial: probit and complementary log-log
@@ -227,6 +235,7 @@ class GAM:
         name: str | None = None,
         load_from_file: str | None = None,
         tau: float | None = None,
+        delta: float | None = None,
     ) -> None:
         """Generalized Additive Model
 
@@ -264,7 +273,9 @@ class GAM:
                 'binomial' (for binary responses),
                 'poisson' (for counts),
                 'gamma' (still in progress),
-                'inverse_gaussian' (still in progress).
+                'inverse_gaussian' (still in progress),
+                'quantile' (pinball loss; requires ``tau``),
+                'huber' (robust M-estimator; requires ``delta``).
              Not currently supported families that could be supported
              include Multinomial models (ordinal and nominal) and
              proportional hazards models. Required unless loading an
@@ -313,6 +324,13 @@ class GAM:
              Quantile level in (0, 1) for ``family='quantile'`` (pinball
              loss). ``tau=0.5`` recovers the conditional median.
              Required when ``family='quantile'`` and ignored otherwise.
+         delta : float or None (optional)
+             Knee parameter for ``family='huber'``. Residuals with
+             ``|y - mu| <= delta`` are penalized as ``0.5 * r^2`` (least
+             squares); larger residuals are penalized linearly, capping
+             their per-observation influence. Must be positive and is in
+             the units of ``y``. Required when ``family='huber'`` and
+             ignored otherwise.
 
         Returns
         -------
@@ -355,6 +373,19 @@ class GAM:
             self._tau: float | None = float(tau)
         else:
             self._tau = None
+
+        if self._family == "huber":
+            if delta is None:
+                raise ValueError("delta must be specified for the huber family.")
+            if not (delta > 0.0):
+                raise ValueError(f"delta must be positive; got {delta}.")
+            if self._link != "identity":
+                raise ValueError(
+                    f"huber family requires link='identity'; got link={self._link!r}."
+                )
+            self._delta: float | None = float(delta)
+        else:
+            self._delta = None
 
         if dispersion is not None:
             self._known_dispersion = True
@@ -407,6 +438,7 @@ class GAM:
         if self._known_dispersion:
             mv["dispersion"] = self._dispersion
         mv["tau"] = self._tau
+        mv["delta"] = self._delta
 
         mv["estimate_overdispersion"] = self._estimate_overdispersion
         mv["offset"] = self._offset
@@ -454,6 +486,7 @@ class GAM:
         if self._known_dispersion:
             self._dispersion = mv["dispersion"]
         self._tau = mv.get("tau")
+        self._delta = mv.get("delta")
 
         self._estimate_overdispersion = mv["estimate_overdispersion"]
         self._offset = mv["offset"]
@@ -761,6 +794,11 @@ class GAM:
                 # tau-quantile, not the mean.
                 assert self._tau is not None
                 self._offset = float(np.quantile(self._y, self._tau))
+            elif self._family == "huber":
+                # Huber loss is robust; the median is the L1 limit of
+                # its M-estimator and a sensible anchor regardless of
+                # delta.
+                self._offset = float(np.median(self._y))
             else:
                 self._offset = float(self._eval_link(np.mean(self._y)))
 
@@ -1005,6 +1043,14 @@ class GAM:
                 self._rho,
                 self._y,
                 self._tau,  # type: ignore[arg-type]
+                w=self._weights,
+            )
+        elif self._family == "huber":
+            return (1.0 / N) * po._prox_huber_identity(
+                N * upf,
+                self._rho,
+                self._y,
+                self._delta,  # type: ignore[arg-type]
                 w=self._weights,
             )
         else:
@@ -1515,6 +1561,18 @@ class GAM:
             if w is None:
                 return float(2.0 * np.sum(term))
             return float(2.0 * w.dot(term))
+        if self._family == "huber":
+            # Huber loss is an M-estimator without a proper likelihood;
+            # report 2 * sum(L_delta(y - mu)) so the inner (quadratic)
+            # region matches normal-family deviance and the convergence
+            # trace stays comparable across runs.
+            delta = float(self._delta)  # type: ignore[arg-type]
+            r = y - mu
+            abs_r = np.abs(r)
+            term = np.where(abs_r <= delta, 0.5 * r * r, delta * (abs_r - 0.5 * delta))
+            if w is None:
+                return float(2.0 * np.sum(term))
+            return float(2.0 * w.dot(term))
         raise ValueError(f"Unsupported family {self._family!r}")
 
     def dispersion(self, formula: str = "deviance") -> float:
@@ -1577,6 +1635,11 @@ class GAM:
         if self._family == "quantile":
             # Pinball loss is an M-estimator, not a likelihood; there
             # is no dispersion to estimate.
+            return 1.0
+        if self._family == "huber":
+            # Huber is an M-estimator. There is no dispersion in the
+            # likelihood sense; sandwich SEs would be the right inferential
+            # tool (#34) but are out of scope here.
             return 1.0
         raise ValueError(f"Unsupported family {self._family!r}")
 

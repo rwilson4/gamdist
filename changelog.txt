@@ -1,3 +1,42 @@
+2026-04-26 : Huber (M-estimator) family for robust continuous regression
+- GAM now accepts family="huber" with a required positive `delta`
+  parameter in the units of `y`. Only link="identity" is supported
+  (the M-estimator framing is convex only at the identity link);
+  other links raise up front. Residuals with |y - mu| <= delta are
+  penalized as 0.5 * r^2; larger residuals are penalized linearly,
+  capping their per-observation influence. This is the standard
+  bounded-influence robust regression loss.
+- Closed-form prox in gamdist/proximal_operators.py:
+  _prox_huber_identity is a clipped weighted-mean shrinkage,
+      x* = v + w*delta/mu               if y - v >  delta*(mu+w)/mu
+      x* = v - w*delta/mu               if y - v < -delta*(mu+w)/mu
+      x* = (w*y + mu*v) / (w + mu)      otherwise.
+  The inner branch matches the normal-identity prox; the outer
+  branches saturate at v +/- w*delta/mu, which is what gives Huber
+  its bounded influence. No ADMM-loop changes; per-feature primal
+  steps see only fpumz and rho exactly as before.
+- The training offset (which anchors the model's average prediction,
+  since every feature is mean-zero) is set to np.median(y) for the
+  huber family. The median is the L1 limit of the Huber M-estimator
+  of location and a robust anchor regardless of delta.
+- _deviance_from_mu reports 2 * sum(L_delta(y - mu)) for the huber
+  family (the M-estimator analogue of -2 * log-likelihood used by the
+  convergence trace and AIC/BIC summaries); dispersion() is fixed at
+  1.0. huber is added to FAMILIES_WITH_KNOWN_DISPERSIONS so AIC/BIC
+  don't add a phantom DOF for an estimated dispersion.
+- delta is persisted in save/load; older pickles default delta to None.
+- Tests in tests/test_proximal_operators.py cover the prox vs.
+  scipy.optimize.minimize_scalar across delta values that span the
+  inner / outer regimes, the quadratic-region collapse to the
+  normal-identity prox at large delta, the outer-region corner
+  saturation, the weighted variant, and continuity at the threshold.
+  tests/test_huber.py adds an end-to-end test that Huber recovers the
+  underlying slope on outlier-contaminated data more accurately than
+  OLS, that delta -> infinity collapses to OLS on clean data, the
+  delta-required / non-positive-delta / non-identity-link API
+  validations, the deviance = 2 * sum(huber_loss) identity, and a
+  save/load round-trip. Closes #21.
+
 2026-04-26 : Quantile (pinball-loss) family for conditional quantile regression
 - GAM now accepts family="quantile" with a required tau parameter in
   (0, 1). Only link="identity" is supported (the M-estimator framing
