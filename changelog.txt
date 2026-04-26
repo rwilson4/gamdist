@@ -1,3 +1,11 @@
+2026-04-26 : Replace assert with raise in proximal-operator validation
+- _prox_normal, _prox_binomial, _prox_poisson, _prox_gamma, and
+  _prox_inv_gaussian previously used `assert inv_link is not None` to
+  validate the required inv_link argument. Under `python -O` assertions
+  are stripped, which would let a None inv_link propagate as a less-
+  clear TypeError deeper in the call. Now raises ValueError with a
+  clear message in all five locations. Closes #41.
+
 2026-04-25 : Group lasso for categorical features
 - _CategoricalFeature now accepts
       regularization={"group_lasso": {"coef": lambda}}

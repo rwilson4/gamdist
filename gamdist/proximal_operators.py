@@ -55,7 +55,8 @@ def _prox_normal(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
-    assert inv_link is not None
+    if inv_link is None:
+        raise ValueError("inv_link is required.")
 
     if w is None:
 
@@ -144,7 +145,8 @@ def _prox_binomial(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
-    assert inv_link is not None
+    if inv_link is None:
+        raise ValueError("inv_link is required.")
 
     if w is None:
 
@@ -229,7 +231,8 @@ def _prox_poisson(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
-    assert inv_link is not None
+    if inv_link is None:
+        raise ValueError("inv_link is required.")
 
     if w is None:
 
@@ -277,7 +280,8 @@ def _prox_gamma(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
-    assert inv_link is not None
+    if inv_link is None:
+        raise ValueError("inv_link is required.")
 
     if w is None:
 
@@ -354,7 +358,8 @@ def _prox_inv_gaussian(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
-    assert inv_link is not None
+    if inv_link is None:
+        raise ValueError("inv_link is required.")
 
     if w is None:
 

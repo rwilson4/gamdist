@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from gamdist import proximal_operators as po
 
@@ -122,3 +123,20 @@ def test_prox_inv_gaussian_reciprocal_squared_with_weights() -> None:
     w = np.array([1.0, 2.0])
     out = po._prox_inv_gaussian_reciprocal_squared(v, mu=1.0, y=y, w=w)
     assert out.shape == v.shape
+
+
+@pytest.mark.parametrize(
+    "fn",
+    [
+        po._prox_normal,
+        po._prox_binomial,
+        po._prox_poisson,
+        po._prox_gamma,
+        po._prox_inv_gaussian,
+    ],
+)
+def test_non_canonical_prox_raises_when_inv_link_missing(fn) -> None:  # type: ignore[no-untyped-def]
+    v = np.array([0.5, 1.0])
+    y = np.array([1.0, 2.0])
+    with pytest.raises(ValueError, match="inv_link"):
+        fn(v, mu=1.0, y=y)
