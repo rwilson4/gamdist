@@ -1,3 +1,41 @@
+2026-04-26 : L_inf-norm group lasso variant
+- Added regularization={"group_lasso_inf": {"coef": lambda}} as a
+  drop-in companion to the existing L2 group lasso on _LinearFeature,
+  _CategoricalFeature, and _SplineFeature. The penalty is
+  lambda * ||f_j||_inf, where ||.||_inf is the largest absolute
+  per-row contribution in f_j. Convex by construction; produces a
+  different shrinkage geometry from the L2 variant -- coefficient
+  clipping rather than uniform contraction. Closes #45.
+- _LinearFeature: f_j = m * (x - mean(x)), so ||f_j||_inf =
+  |m| * max|x - mean(x)|. The penalty reduces to a 1-D
+  soft-threshold on the slope with threshold
+  lambda_inf * max|x - mean(x)| / rho. Stacks additively with the
+  existing L1 and L2-group-lasso thresholds and combines with
+  ridge as an elastic-net closed form (no cvxpy on the linear path).
+  initialize() now also stores _x_inf = max|x - mean(x)|; older
+  pickles recompute it on load.
+- _CategoricalFeature: penalty term
+  (2/rho) * lambda_inf * ||A q||_inf is added to the cvxpy program
+  alongside any other regularizers. ||A q||_inf = max_{c with obs}
+  |q_c|; categories that never appear in training data are masked
+  out (via ccs > 0) so unused-but-network-connected levels can't
+  inflate the penalty.
+- _SplineFeature: penalty term gamma_inf * cvx.norm_inf(N theta)
+  is added in _optimize_cvx alongside any L2 group-lasso term.
+  optimize() routes through the cvxpy path whenever either
+  group-lasso variant is active; the closed-form Cholesky path is
+  preserved when both are off.
+- Save/load round-trips updated for all three feature types; older
+  pickles default has_group_lasso_inf=False with zero coefficient.
+- gamdist.add_feature docstring mentions the new key. Tests in
+  tests/test_{linear,categorical,spline}_group_lasso_inf.py cover:
+  no-coef rejection, smoothing scaling, coef=0 matches unpenalized,
+  large-coef zeros the contribution, threshold/closed-form for the
+  linear path, the categorical clipping geometry vs. L2's uniform
+  contraction, additive combination with the L2 variant, save/load
+  round-trip, and end-to-end "drops the noise feature" within a
+  full GAM fit for each feature type.
+
 2026-04-26 : Quasi-likelihood families (quasi_poisson, quasi_binomial)
 - Added two new family aliases: family="quasi_poisson" routes to the
   Poisson log-link prox, and family="quasi_binomial" routes to the

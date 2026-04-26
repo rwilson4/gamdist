@@ -200,10 +200,13 @@ class _SplineFeature(_Feature):
             Relative degrees of freedom for the curvature smoother.
         regularization : dict
             Optional extra regularization beyond the built-in curvature
-            penalty. Currently only ``group_lasso`` is supported, taking
-            ``{"coef": λ}``: it adds ``λ · ‖N θ‖₂`` to the objective,
-            zeroing out the entire spline contribution once λ is large
-            enough.
+            penalty. ``group_lasso`` takes ``{"coef": λ}`` and adds
+            ``λ · ‖N θ‖₂`` to the objective, zeroing out the entire
+            spline contribution once λ is large enough. ``group_lasso_inf``
+            takes ``{"coef": λ}`` and adds ``λ · ‖N θ‖_∞`` -- the L_∞
+            variant clips the largest pointwise contribution rather than
+            applying uniform L2 contraction. The two variants combine
+            additively when both are specified.
         load_from_file : str
             If provided, restore parameters from this pickle path. All
             other parameters are ignored when loading.
@@ -231,6 +234,9 @@ class _SplineFeature(_Feature):
         self._has_group_lasso = False
         self._coef_group_lasso: float = 0.0
         self._lambda_group_lasso: float = 0.0
+        self._has_group_lasso_inf = False
+        self._coef_group_lasso_inf: float = 0.0
+        self._lambda_group_lasso_inf: float = 0.0
         self._solver = "CLARABEL"
         if regularization is not None and "group_lasso" in regularization:
             self._has_group_lasso = True
@@ -239,6 +245,17 @@ class _SplineFeature(_Feature):
             else:
                 raise ValueError(
                     "No coefficient specified for group_lasso regularization term."
+                )
+
+        if regularization is not None and "group_lasso_inf" in regularization:
+            self._has_group_lasso_inf = True
+            if "coef" in regularization["group_lasso_inf"]:
+                self._coef_group_lasso_inf = float(
+                    regularization["group_lasso_inf"]["coef"]
+                )
+            else:
+                raise ValueError(
+                    "No coefficient specified for group_lasso_inf regularization term."
                 )
 
     def initialize(
@@ -290,6 +307,9 @@ class _SplineFeature(_Feature):
         if self._has_group_lasso:
             self._lambda_group_lasso = self._coef_group_lasso * smoothing
 
+        if self._has_group_lasso_inf:
+            self._lambda_group_lasso_inf = self._coef_group_lasso_inf * smoothing
+
         if save_flag:
             self._save_self = True
             if save_prefix is None:
@@ -323,6 +343,7 @@ class _SplineFeature(_Feature):
             "dof": self._dof,
             "save_self": self._save_self,
             "has_group_lasso": self._has_group_lasso,
+            "has_group_lasso_inf": self._has_group_lasso_inf,
             "solver": self._solver,
         }
         if self._has_transform:
@@ -330,6 +351,9 @@ class _SplineFeature(_Feature):
         if self._has_group_lasso:
             mv["coef_group_lasso"] = self._coef_group_lasso
             mv["lambda_group_lasso"] = self._lambda_group_lasso
+        if self._has_group_lasso_inf:
+            mv["coef_group_lasso_inf"] = self._coef_group_lasso_inf
+            mv["lambda_group_lasso_inf"] = self._lambda_group_lasso_inf
 
         with open(self._filename, "wb") as f:
             pickle.dump(mv, f)
@@ -371,6 +395,14 @@ class _SplineFeature(_Feature):
         else:
             self._coef_group_lasso = 0.0
             self._lambda_group_lasso = 0.0
+        # has_group_lasso_inf added later; default for older pickles.
+        self._has_group_lasso_inf = mv.get("has_group_lasso_inf", False)
+        if self._has_group_lasso_inf:
+            self._coef_group_lasso_inf = mv["coef_group_lasso_inf"]
+            self._lambda_group_lasso_inf = mv["lambda_group_lasso_inf"]
+        else:
+            self._coef_group_lasso_inf = 0.0
+            self._lambda_group_lasso_inf = 0.0
 
     def optimize(self, fpumz: FloatArray, rho: float) -> FloatArray:
         """Solve the per-feature primal step.
@@ -387,7 +419,7 @@ class _SplineFeature(_Feature):
         fkp1 : (m,) ndarray
             Vector representing this feature's contribution to the response.
         """
-        if self._has_group_lasso:
+        if self._has_group_lasso or self._has_group_lasso_inf:
             self._theta = self._optimize_cvx(fpumz, rho)
         else:
             self._theta = self._optimize_chol(fpumz, rho)
@@ -418,25 +450,29 @@ class _SplineFeature(_Feature):
         """Primal step via cvxpy when a group_lasso term is present.
 
         Group lasso on the per-feature contribution f_j = N theta penalizes
-        ``λ · ||N θ||₂``, which is non-smooth at zero and breaks the
-        closed-form Cholesky path. The fast path is used whenever group
-        lasso is off, so this branch only runs when needed.
+        ``λ · ||N θ||₂`` (or ``λ · ||N θ||_∞`` for the L_inf variant), both
+        of which are non-smooth at zero and break the closed-form Cholesky
+        path. The fast path is used whenever neither variant is active, so
+        this branch only runs when needed.
         """
         target = self._N.dot(self._theta) - fpumz
         K = len(self._theta)
         nu = 2.0 * self._smoothing * self._lmbda / rho
         gamma = 2.0 * self._lambda_group_lasso / rho
+        gamma_inf = 2.0 * self._lambda_group_lasso_inf / rho
 
         theta_var = cvx.Variable(K)
         N_const = cvx.Constant(self._N)
         Omega_const = cvx.psd_wrap(cvx.Constant(self._Omega))
         c_vec = np.mean(self._N, axis=0)
 
-        obj = (
-            cvx.sum_squares(N_const @ theta_var - cvx.Constant(target))
-            + nu * cvx.quad_form(theta_var, Omega_const)
-            + gamma * cvx.norm(N_const @ theta_var, 2)
-        )
+        obj: Any = cvx.sum_squares(
+            N_const @ theta_var - cvx.Constant(target)
+        ) + nu * cvx.quad_form(theta_var, Omega_const)
+        if self._has_group_lasso:
+            obj = obj + gamma * cvx.norm(N_const @ theta_var, 2)
+        if self._has_group_lasso_inf:
+            obj = obj + gamma_inf * cvx.norm_inf(N_const @ theta_var)
         constraints = [cvx.Constant(c_vec) @ theta_var == 0]
         prob = cvx.Problem(cvx.Minimize(obj), constraints)
         # cvxpy's "Solution may be inaccurate" UserWarning escapes the

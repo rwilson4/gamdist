@@ -54,8 +54,12 @@ class _CategoricalFeature(_Feature):
             Name for feature, used to make plots.
         regularization : dict
             Description of regularization terms (``l1``, ``l2``,
-            ``group_lasso``, ``network_lasso``, ``network_ridge``).
-            See the package README for details.
+            ``group_lasso``, ``group_lasso_inf``, ``network_lasso``,
+            ``network_ridge``). The ``group_lasso_inf`` variant
+            penalizes ``λ · ‖A q‖_∞ = λ · max_{c with obs} |q_c|``,
+            which clips the largest per-level effect rather than the
+            uniform L2 contraction induced by ``group_lasso``. See
+            the package README for details.
         load_from_file : str
             Pickle path used to restore parameters. If specified,
             other parameters are ignored.
@@ -78,12 +82,14 @@ class _CategoricalFeature(_Feature):
         self._has_network_lasso = False
         self._has_network_ridge = False
         self._has_group_lasso = False
+        self._has_group_lasso_inf = False
         self._has_prior = False
         self._coef1: float | dict[Any, float] = 0.0
         self._coef2: float | dict[Any, float] = 0.0
         self._lambda_network_lasso: float = 0.0
         self._lambda_network_ridge: float = 0.0
         self._lambda_group_lasso: float = 0.0
+        self._lambda_group_lasso_inf: float = 0.0
         self._num_edges: int = 0
         self._num_edges_ridge: int = 0
         if regularization is not None:
@@ -162,6 +168,17 @@ class _CategoricalFeature(_Feature):
                 else:
                     raise ValueError(
                         "No coefficient specified for group_lasso regularization term."
+                    )
+
+            if "group_lasso_inf" in regularization:
+                self._has_group_lasso_inf = True
+                if "coef" in regularization["group_lasso_inf"]:
+                    self._lambda_group_lasso_inf = float(
+                        regularization["group_lasso_inf"]["coef"]
+                    )
+                else:
+                    raise ValueError(
+                        "No coefficient specified for group_lasso_inf regularization term."
                     )
 
             if (self._has_l1 or self._has_l2) and "prior" in regularization:
@@ -250,6 +267,9 @@ class _CategoricalFeature(_Feature):
         if self._has_group_lasso:
             self._lambda_group_lasso *= smoothing
 
+        if self._has_group_lasso_inf:
+            self._lambda_group_lasso_inf *= smoothing
+
         if (self._has_l1 or self._has_l2) and self._has_prior:
             prior_vec = np.zeros(self._num_categories)
             for key, value in self._prior.items():
@@ -319,6 +339,7 @@ class _CategoricalFeature(_Feature):
             "has_network_lasso": self._has_network_lasso,
             "has_network_ridge": self._has_network_ridge,
             "has_group_lasso": self._has_group_lasso,
+            "has_group_lasso_inf": self._has_group_lasso_inf,
             "has_prior": self._has_prior,
             "na_index": self._na_index,
             "x": self.x,
@@ -349,6 +370,8 @@ class _CategoricalFeature(_Feature):
             mv["lambda_network_ridge"] = self._lambda_network_ridge
         if self._has_group_lasso:
             mv["lambda_group_lasso"] = self._lambda_group_lasso
+        if self._has_group_lasso_inf:
+            mv["lambda_group_lasso_inf"] = self._lambda_group_lasso_inf
         if self._has_prior:
             mv["prior"] = self._prior
 
@@ -397,6 +420,12 @@ class _CategoricalFeature(_Feature):
             self._lambda_group_lasso = mv["lambda_group_lasso"]
         else:
             self._lambda_group_lasso = 0.0
+        # has_group_lasso_inf added later; default to False for older pickles.
+        self._has_group_lasso_inf = mv.get("has_group_lasso_inf", False)
+        if self._has_group_lasso_inf:
+            self._lambda_group_lasso_inf = mv["lambda_group_lasso_inf"]
+        else:
+            self._lambda_group_lasso_inf = 0.0
         self._has_prior = mv["has_prior"]
         if self._has_prior:
             self._prior = mv["prior"]
@@ -484,6 +513,18 @@ class _CategoricalFeature(_Feature):
             sqrt_ccs = cvx.Constant(np.sqrt(self._ccs))
             obj = obj + (2.0 / rho) * self._lambda_group_lasso * cvx.norm(
                 cvx.multiply(sqrt_ccs, q), 2
+            )
+
+        if self._has_group_lasso_inf:
+            # L_inf-norm group lasso variant: penalize ||A q||_inf =
+            # max_{c with obs} |q_c|. Because A is an indicator matrix,
+            # categories that never appear in the data don't contribute
+            # to ||f_j||_inf -- mask them out so a free-to-roam value at
+            # an unused level (e.g., one connected only by network_ridge
+            # edges) can't artificially saturate the penalty.
+            mask = cvx.Constant((self._ccs > 0).astype(float))
+            obj = obj + (2.0 / rho) * self._lambda_group_lasso_inf * cvx.norm_inf(
+                cvx.multiply(mask, q)
             )
 
         prob = cvx.Problem(cvx.Minimize(obj), constraints)
