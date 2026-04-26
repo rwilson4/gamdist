@@ -89,19 +89,25 @@ class _CategoricalFeature(_Feature):
                 if "coef" in regularization["l1"]:
                     self._coef1 = regularization["l1"]["coef"]
                 else:
-                    raise ValueError("No coefficient specified for l1 regularization term.")
+                    raise ValueError(
+                        "No coefficient specified for l1 regularization term."
+                    )
 
             if "l2" in regularization:
                 self._has_l2 = True
                 if "coef" in regularization["l2"]:
                     self._coef2 = regularization["l2"]["coef"]
                 else:
-                    raise ValueError("No coefficient specified for l2 regularization term.")
+                    raise ValueError(
+                        "No coefficient specified for l2 regularization term."
+                    )
 
             if "network_lasso" in regularization:
                 self._has_network_lasso = True
                 if "coef" in regularization["network_lasso"]:
-                    self._lambda_network_lasso = float(regularization["network_lasso"]["coef"])
+                    self._lambda_network_lasso = float(
+                        regularization["network_lasso"]["coef"]
+                    )
                 else:
                     raise ValueError(
                         "No coefficient specified for Network Lasso regularization term."
@@ -123,7 +129,9 @@ class _CategoricalFeature(_Feature):
             if "group_lasso" in regularization:
                 self._has_group_lasso = True
                 if "coef" in regularization["group_lasso"]:
-                    self._lambda_group_lasso = float(regularization["group_lasso"]["coef"])
+                    self._lambda_group_lasso = float(
+                        regularization["group_lasso"]["coef"]
+                    )
                 else:
                     raise ValueError(
                         "No coefficient specified for group_lasso regularization term."
@@ -150,7 +158,10 @@ class _CategoricalFeature(_Feature):
         self._categories = list(set(x).union(self._categories))
         self._num_categories = len(self._categories)
         self._category_hash: dict[Any, int] = {
-            key: i for (key, i) in zip(self._categories, range(self._num_categories), strict=True)
+            key: i
+            for (key, i) in zip(
+                self._categories, range(self._num_categories), strict=True
+            )
         }
 
         if self._has_network_lasso:
@@ -204,7 +215,9 @@ class _CategoricalFeature(_Feature):
         if covariate_class_sizes is None:
             self._ccs = cnt.astype(float)
         else:
-            self._ccs = self._compute_Atz(np.asarray(covariate_class_sizes, dtype=float))
+            self._ccs = self._compute_Atz(
+                np.asarray(covariate_class_sizes, dtype=float)
+            )
 
         if self._verbose:
             print(f"Number of categories: {self._num_categories:d}")
@@ -222,7 +235,9 @@ class _CategoricalFeature(_Feature):
             self._filename = None
             self._save_self = False
 
-    def _compute_lambda(self, coef: float | dict[Any, float], smoothing: float) -> FloatArray:
+    def _compute_lambda(
+        self, coef: float | dict[Any, float], smoothing: float
+    ) -> FloatArray:
         """Build the per-category regularization-weight vector."""
         result = np.zeros(self._num_categories)
         if isinstance(coef, (int, float)):
@@ -413,7 +428,9 @@ class _CategoricalFeature(_Feature):
 
         value = q.value
         if value is None:
-            raise RuntimeError(f"Categorical variable {self._name!r} produced no solution.")
+            raise RuntimeError(
+                f"Categorical variable {self._name!r} produced no solution."
+            )
         self.p = np.asarray(value, dtype=float).ravel()
         if self._na_index >= 0:
             self.p[self._na_index] = 0.0

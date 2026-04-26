@@ -21,9 +21,7 @@ def test_gamma_dispersion_solves_likelihood_equation() -> None:
     # root of f(nu) = 2*n*(log nu - psi(nu)) - dof/nu - dev.
     nu = _gamma_dispersion(dof=3.0, dev=10.0, num_obs=50)
     assert nu > 0
-    f_at_nu = (
-        2.0 * 50 * (np.log(nu) - special.psi(nu)) - 3.0 / nu - 10.0
-    )
+    f_at_nu = 2.0 * 50 * (np.log(nu) - special.psi(nu)) - 3.0 / nu - 10.0
     assert abs(f_at_nu) < 1e-6
 
 

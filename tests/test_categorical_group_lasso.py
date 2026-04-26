@@ -24,9 +24,7 @@ def test_group_lasso_no_coef_raises() -> None:
 
 
 def test_group_lasso_smoothing_scales_lambda() -> None:
-    feat = _CategoricalFeature(
-        name="g", regularization={"group_lasso": {"coef": 0.4}}
-    )
+    feat = _CategoricalFeature(name="g", regularization={"group_lasso": {"coef": 0.4}})
     feat.initialize(np.array(["a", "b", "a"]), smoothing=2.5)
     assert feat._has_group_lasso
     assert feat._lambda_group_lasso == pytest.approx(1.0)
@@ -52,9 +50,7 @@ def test_group_lasso_huge_lambda_zeros_parameters() -> None:
     rng = np.random.default_rng(0)
     x = rng.choice(np.array(["a", "b", "c"]), size=200)
     fpumz = rng.normal(size=200)
-    feat = _CategoricalFeature(
-        name="g", regularization={"group_lasso": {"coef": 1e6}}
-    )
+    feat = _CategoricalFeature(name="g", regularization={"group_lasso": {"coef": 1e6}})
     feat.initialize(x)
     feat.optimize(fpumz, rho=1.0)
     np.testing.assert_allclose(feat.p, 0.0, atol=1e-6)
@@ -65,7 +61,9 @@ def test_group_lasso_intermediate_lambda_shrinks() -> None:
     # moderate group lasso penalty than without.
     rng = np.random.default_rng(0)
     x = rng.choice(np.array(["a", "b", "c"]), size=200)
-    fpumz = rng.normal(size=200) + 2.0  # strong signal so the unpenalized fit isn't tiny
+    fpumz = (
+        rng.normal(size=200) + 2.0
+    )  # strong signal so the unpenalized fit isn't tiny
 
     unpenalized = _CategoricalFeature(name="g")
     unpenalized.initialize(x)
@@ -81,9 +79,7 @@ def test_group_lasso_intermediate_lambda_shrinks() -> None:
 
 
 def test_group_lasso_save_load_round_trip(tmp_path: Path) -> None:
-    feat = _CategoricalFeature(
-        name="g", regularization={"group_lasso": {"coef": 0.7}}
-    )
+    feat = _CategoricalFeature(name="g", regularization={"group_lasso": {"coef": 0.7}})
     feat.initialize(
         np.array(["a", "b", "a"]),
         smoothing=2.0,

@@ -105,7 +105,9 @@ class _LinearFeature(_Feature):
                 if "coef" in regularization["l2"]:
                     self._coef2 = float(regularization["l2"]["coef"])
                 else:
-                    raise ValueError("No coefficient specified for l2 regularization term.")
+                    raise ValueError(
+                        "No coefficient specified for l2 regularization term."
+                    )
 
             if self._has_l1 or self._has_l2:
                 self._has_prior = True

@@ -44,7 +44,9 @@ from .spline_feature import _SplineFeature
 
 FloatArray = npt.NDArray[np.float64]
 
-Family = Literal["normal", "binomial", "poisson", "gamma", "exponential", "inverse_gaussian"]
+Family = Literal[
+    "normal", "binomial", "poisson", "gamma", "exponential", "inverse_gaussian"
+]
 Link = Literal[
     "identity",
     "logistic",
@@ -60,36 +62,31 @@ FeatureType = Literal["categorical", "linear", "spline"]
 # tracker and changelog.txt respectively; see
 # https://github.com/rwilson4/gamdist/issues for the current roadmap.
 
-FAMILIES = ['normal',
-            'binomial',
-            'poisson',
-            'gamma',
-            'exponential',
-            'inverse_gaussian'
-            ]
+FAMILIES = ["normal", "binomial", "poisson", "gamma", "exponential", "inverse_gaussian"]
 
-LINKS = ['identity',
-         'logistic',
-         'probit',
-         'complementary_log_log',
-         'log',
-         'reciprocal',
-         'reciprocal_squared'
-         ]
+LINKS = [
+    "identity",
+    "logistic",
+    "probit",
+    "complementary_log_log",
+    "log",
+    "reciprocal",
+    "reciprocal_squared",
+]
 
-FAMILIES_WITH_KNOWN_DISPERSIONS = {'binomial': 1,
-                                   'poisson': 1
-                                   }
+FAMILIES_WITH_KNOWN_DISPERSIONS = {"binomial": 1, "poisson": 1}
 
-CANONICAL_LINKS = {'normal': 'identity',
-                   'binomial': 'logistic',
-                   'poisson': 'log',
-                   'gamma': 'reciprocal',
-                   'inverse_gaussian': 'reciprocal_squared'
-                   }
+CANONICAL_LINKS = {
+    "normal": "identity",
+    "binomial": "logistic",
+    "poisson": "log",
+    "gamma": "reciprocal",
+    "inverse_gaussian": "reciprocal_squared",
+}
 # Non-canonical but common link/family combinations include:
 # Binomial: probit and complementary log-log
 # Gamma: identity and log
+
 
 def _plot_convergence(
     prim_res: list[float],
@@ -142,7 +139,9 @@ def _plot_convergence(
     plt.legend(fontsize=24, loc=3)
 
     ax = fig.add_subplot(212)
-    ax.plot(range(len(dev_arr)), (dev_arr - dev_arr[-1]) + 1e-10, "b-", label="Deviance")
+    ax.plot(
+        range(len(dev_arr)), (dev_arr - dev_arr[-1]) + 1e-10, "b-", label="Deviance"
+    )
     ax.set_yscale("log")
     plt.xlabel("Iteration", fontsize=24)
     plt.ylabel("Deviance Suboptimality", fontsize=24)
@@ -197,8 +196,11 @@ def _gamma_dispersion(dof: float, dev: float, num_obs: int) -> float:
 
     lo, hi = 1e-8, 1e8
     if f(lo) * f(hi) > 0:
-        raise ValueError("Could not estimate gamma dispersion: no sign change in bracket.")
+        raise ValueError(
+            "Could not estimate gamma dispersion: no sign change in bracket."
+        )
     return float(optimize.brentq(f, lo, hi, xtol=1e-10, rtol=1e-10))
+
 
 class GAM:
     def __init__(
@@ -303,13 +305,13 @@ class GAM:
             return
 
         if family is None:
-            raise ValueError('Family not specified.')
+            raise ValueError("Family not specified.")
         elif family not in FAMILIES:
-            raise ValueError(f'{family} family not supported')
-        elif family == 'exponential':
+            raise ValueError(f"{family} family not supported")
+        elif family == "exponential":
             # Exponential is a special case of Gamma with a dispersion of 1.
-            self._family = 'gamma'
-            dispersion = 1.
+            self._family = "gamma"
+            dispersion = 1.0
         else:
             self._family = family
 
@@ -318,40 +320,42 @@ class GAM:
         elif link in LINKS:
             self._link = link
         else:
-            raise ValueError(f'{link} link not supported')
+            raise ValueError(f"{link} link not supported")
 
         if dispersion is not None:
             self._known_dispersion = True
             self._dispersion = dispersion
-        elif (self._family in FAMILIES_WITH_KNOWN_DISPERSIONS
-              and not estimate_overdispersion):
+        elif (
+            self._family in FAMILIES_WITH_KNOWN_DISPERSIONS
+            and not estimate_overdispersion
+        ):
             self._known_dispersion = True
             self._dispersion = FAMILIES_WITH_KNOWN_DISPERSIONS[self._family]
         else:
             self._known_dispersion = False
 
-        if self._link == 'identity':
+        if self._link == "identity":
             self._eval_link = lambda x: x
             self._eval_inv_link = lambda x: x
-        elif self._link == 'logistic':
+        elif self._link == "logistic":
             self._eval_link = lambda x: special.logit(x)
             self._eval_inv_link = lambda x: special.expit(x)
-        elif self._link == 'probit':
+        elif self._link == "probit":
             # Inverse CDF of the Gaussian distribution
             self._eval_link = lambda x: stats.norm.ppf(x)
             self._eval_inv_link = lambda x: stats.norm.cdf(x)
-        elif self._link == 'complementary_log_log':
-            self._eval_link = lambda x: np.log(-np.log(1. - x))
-            self._eval_inv_link = lambda x: 1. - np.exp(-np.exp(x))
-        elif self._link == 'log':
+        elif self._link == "complementary_log_log":
+            self._eval_link = lambda x: np.log(-np.log(1.0 - x))
+            self._eval_inv_link = lambda x: 1.0 - np.exp(-np.exp(x))
+        elif self._link == "log":
             self._eval_link = lambda x: np.log(x)
             self._eval_inv_link = lambda x: np.exp(x)
-        elif self._link == 'reciprocal':
-            self._eval_link = lambda x: 1. / x
-            self._eval_inv_link = lambda x: 1. / x
-        elif self._link == 'reciprocal_squared':
-            self._eval_link = lambda x: 1. / (x * x)
-            self._eval_inv_link = lambda x: 1. / np.sqrt(x)
+        elif self._link == "reciprocal":
+            self._eval_link = lambda x: 1.0 / x
+            self._eval_inv_link = lambda x: 1.0 / x
+        elif self._link == "reciprocal_squared":
+            self._eval_link = lambda x: 1.0 / (x * x)
+            self._eval_inv_link = lambda x: 1.0 / np.sqrt(x)
 
         self._estimate_overdispersion = estimate_overdispersion
         self._features: dict[str, _Feature] = {}
@@ -409,69 +413,74 @@ class GAM:
             mv = pickle.load(f)
 
         self._filename = filename
-        self._family = mv['family']
-        self._link = mv['link']
-        self._known_dispersion = mv['known_dispersion']
+        self._family = mv["family"]
+        self._link = mv["link"]
+        self._known_dispersion = mv["known_dispersion"]
         if self._known_dispersion:
-            self._dispersion = mv['dispersion']
+            self._dispersion = mv["dispersion"]
 
-        self._estimate_overdispersion = mv['estimate_overdispersion']
-        self._offset = mv['offset']
-        self._num_features = mv['num_features']
-        self._fitted = mv['fitted']
-        self._name = mv['name']
+        self._estimate_overdispersion = mv["estimate_overdispersion"]
+        self._offset = mv["offset"]
+        self._num_features = mv["num_features"]
+        self._fitted = mv["fitted"]
+        self._name = mv["name"]
 
         self._features = {}
-        features = mv['features']
-        for (name, feature) in features.items():
-            if feature['type'] == 'categorical':
-                self._features[name] = _CategoricalFeature(load_from_file=feature['filename'])
-            elif feature['type'] == 'linear':
-                self._features[name] = _LinearFeature(load_from_file=feature['filename'])
-            elif feature['type'] == 'spline':
-                self._features[name] = _SplineFeature(load_from_file=feature['filename'])
+        features = mv["features"]
+        for name, feature in features.items():
+            if feature["type"] == "categorical":
+                self._features[name] = _CategoricalFeature(
+                    load_from_file=feature["filename"]
+                )
+            elif feature["type"] == "linear":
+                self._features[name] = _LinearFeature(
+                    load_from_file=feature["filename"]
+                )
+            elif feature["type"] == "spline":
+                self._features[name] = _SplineFeature(
+                    load_from_file=feature["filename"]
+                )
             else:
-                raise ValueError('Invalid feature type')
+                raise ValueError("Invalid feature type")
 
-        self._num_obs = mv['num_obs']
-        self._y = mv['y']
-        self._weights = mv['weights']
-        self._has_covariate_classes = mv['has_covariate_classes']
+        self._num_obs = mv["num_obs"]
+        self._y = mv["y"]
+        self._weights = mv["weights"]
+        self._has_covariate_classes = mv["has_covariate_classes"]
         if self._has_covariate_classes:
-            self._covariate_class_sizes = mv['covariate_class_sizes']
+            self._covariate_class_sizes = mv["covariate_class_sizes"]
 
-        self.f_bar = mv['f_bar']
-        self.z_bar = mv['z_bar']
-        self.u = mv['u']
-        self.prim_res = mv['prim_res']
-        self.dual_res = mv['dual_res']
-        self.prim_tol = mv['prim_tol']
-        self.dual_tol = mv['dual_tol']
-        self.dev = mv['dev']
+        self.f_bar = mv["f_bar"]
+        self.z_bar = mv["z_bar"]
+        self.u = mv["u"]
+        self.prim_res = mv["prim_res"]
+        self.dual_res = mv["dual_res"]
+        self.prim_tol = mv["prim_tol"]
+        self.dual_tol = mv["dual_tol"]
+        self.dev = mv["dev"]
 
-        if self._link == 'identity':
+        if self._link == "identity":
             self._eval_link = lambda x: x
             self._eval_inv_link = lambda x: x
-        elif self._link == 'logistic':
+        elif self._link == "logistic":
             self._eval_link = lambda x: special.logit(x)
             self._eval_inv_link = lambda x: special.expit(x)
-        elif self._link == 'probit':
+        elif self._link == "probit":
             # Inverse CDF of the Gaussian distribution
             self._eval_link = lambda x: stats.norm.ppf(x)
             self._eval_inv_link = lambda x: stats.norm.cdf(x)
-        elif self._link == 'complementary_log_log':
-            self._eval_link = lambda x: np.log(-np.log(1. - x))
-            self._eval_inv_link = lambda x: 1. - np.exp(-np.exp(x))
-        elif self._link == 'log':
+        elif self._link == "complementary_log_log":
+            self._eval_link = lambda x: np.log(-np.log(1.0 - x))
+            self._eval_inv_link = lambda x: 1.0 - np.exp(-np.exp(x))
+        elif self._link == "log":
             self._eval_link = lambda x: np.log(x)
             self._eval_inv_link = lambda x: np.exp(x)
-        elif self._link == 'reciprocal':
-            self._eval_link = lambda x: 1. / x
-            self._eval_inv_link = lambda x: 1. / x
-        elif self._link == 'reciprocal_squared':
-            self._eval_link = lambda x: 1. / (x * x)
-            self._eval_inv_link = lambda x: 1. / np.sqrt(x)
-
+        elif self._link == "reciprocal":
+            self._eval_link = lambda x: 1.0 / x
+            self._eval_inv_link = lambda x: 1.0 / x
+        elif self._link == "reciprocal_squared":
+            self._eval_link = lambda x: 1.0 / (x * x)
+            self._eval_inv_link = lambda x: 1.0 / np.sqrt(x)
 
     def add_feature(
         self,
@@ -667,20 +676,20 @@ class GAM:
         # No point in more workers than features.
         n_jobs = min(n_jobs, max(self._num_features, 1))
         if save_flag and self._name is None:
-            msg = 'Cannot save a GAM with no name.'
-            msg += ' Specify name when instantiating model.'
+            msg = "Cannot save a GAM with no name."
+            msg += " Specify name when instantiating model."
             raise ValueError(msg)
 
         if len(X) != len(y):
-            raise ValueError('Inconsistent number of observations in X and y.')
+            raise ValueError("Inconsistent number of observations in X and y.")
         if weights is not None and len(weights) != len(y):
             raise ValueError(
-                f'weights has length {len(weights)} but y has length {len(y)}.'
+                f"weights has length {len(weights)} but y has length {len(y)}."
             )
         if covariate_class_sizes is not None and len(covariate_class_sizes) != len(y):
             raise ValueError(
-                f'covariate_class_sizes has length {len(covariate_class_sizes)} '
-                f'but y has length {len(y)}.'
+                f"covariate_class_sizes has length {len(covariate_class_sizes)} "
+                f"but y has length {len(y)}."
             )
 
         self._rho = 0.1
@@ -696,7 +705,9 @@ class GAM:
         if covariate_class_sizes is not None:
             self._has_covariate_classes = True
             self._covariate_class_sizes = covariate_class_sizes
-            mean_response = float(np.sum(self._y)) / float(np.sum(self._covariate_class_sizes))
+            mean_response = float(np.sum(self._y)) / float(
+                np.sum(self._covariate_class_sizes)
+            )
             self._offset = float(self._eval_link(mean_response))
         else:
             self._has_covariate_classes = False
@@ -737,8 +748,9 @@ class GAM:
             self._save()
 
         if plot_convergence:
-            _plot_convergence(self.prim_res, self.prim_tol, self.dual_res,
-                              self.dual_tol, self.dev)
+            _plot_convergence(
+                self.prim_res, self.prim_tol, self.dual_res, self.dual_tol, self.dev
+            )
 
     def _admm_loop(
         self,
@@ -780,9 +792,11 @@ class GAM:
             norm_aty = 0.0
             num_params = 0
             for name, feature in self._features.items():
-                dr = ((fj_new[name] - fj[name])
-                      + (z_new - self.z_bar)
-                      - (f_new - self.f_bar))
+                dr = (
+                    (fj_new[name] - fj[name])
+                    + (z_new - self.z_bar)
+                    - (f_new - self.f_bar)
+                )
                 dual_res += dr.dot(dr)
                 norm_ax += fj_new[name].dot(fj_new[name])
                 zik = fj_new[name] + z_new - f_new
@@ -800,12 +814,14 @@ class GAM:
             self.z_bar = z_new
             if self._has_covariate_classes:
                 sccs = np.sum(self._covariate_class_sizes)
-                prim_tol = (np.sqrt(sccs * self._num_features) * eps_abs
-                            + eps_rel * np.max([norm_ax, norm_bz]))
+                prim_tol = np.sqrt(
+                    sccs * self._num_features
+                ) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
 
             else:
-                prim_tol = (np.sqrt(self._num_obs * self._num_features) * eps_abs
-                            + eps_rel * np.max([norm_ax, norm_bz]))
+                prim_tol = np.sqrt(
+                    self._num_obs * self._num_features
+                ) * eps_abs + eps_rel * np.max([norm_ax, norm_bz])
 
             dual_tol = np.sqrt(num_params) * eps_abs + eps_rel * norm_aty
 
@@ -898,13 +914,13 @@ class GAM:
         # binomial variant takes a covariate-class-sizes argument), so the
         # dispatch is typed as Any to keep mypy quiet here.
         prox: Any
-        if self._family == 'normal':
-            if self._link == 'identity':
+        if self._family == "normal":
+            if self._link == "identity":
                 prox = po._prox_normal_identity
             else:
                 prox = po._prox_normal
-        elif self._family == 'binomial':
-            if self._link == 'logistic':
+        elif self._family == "binomial":
+            if self._link == "logistic":
                 prox = po._prox_binomial_logit
             else:
                 prox = po._prox_binomial
@@ -922,7 +938,11 @@ class GAM:
         elif self._family == "poisson":
             prox = po._prox_poisson_log if self._link == "log" else po._prox_poisson
         elif self._family == "gamma":
-            prox = po._prox_gamma_reciprocal if self._link == "reciprocal" else po._prox_gamma
+            prox = (
+                po._prox_gamma_reciprocal
+                if self._link == "reciprocal"
+                else po._prox_gamma
+            )
         elif self._family == "inverse_gaussian":
             prox = (
                 po._prox_inv_gaussian_reciprocal_squared
@@ -1205,8 +1225,10 @@ class GAM:
         if self._family == "poisson":
             # V(mu) = mu, A(t) = (3/2) t^(2/3).
             return np.asarray(
-                1.5 * (y ** (2.0 / 3.0) - mu ** (2.0 / 3.0))
-                / mu ** (1.0 / 6.0) / np.sqrt(phi),
+                1.5
+                * (y ** (2.0 / 3.0) - mu ** (2.0 / 3.0))
+                / mu ** (1.0 / 6.0)
+                / np.sqrt(phi),
                 dtype=float,
             )
         if self._family == "gamma":
@@ -1215,8 +1237,10 @@ class GAM:
             y_safe = np.where(y > 0, y, tiny)
             mu_safe = np.where(mu > 0, mu, tiny)
             return np.asarray(
-                3.0 * (y_safe ** (1.0 / 3.0) - mu_safe ** (1.0 / 3.0))
-                / mu_safe ** (1.0 / 3.0) / np.sqrt(phi),
+                3.0
+                * (y_safe ** (1.0 / 3.0) - mu_safe ** (1.0 / 3.0))
+                / mu_safe ** (1.0 / 3.0)
+                / np.sqrt(phi),
                 dtype=float,
             )
         if self._family == "inverse_gaussian":
@@ -1390,7 +1414,9 @@ class GAM:
             eps = np.finfo(float).eps
             mu_c = np.clip(mu, eps, 1.0 - eps)
             if w is None:
-                return float(-2.0 * np.sum(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c)))
+                return float(
+                    -2.0 * np.sum(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c))
+                )
             return float(-2.0 * w.dot(y * np.log(mu_c) + (m - y) * np.log1p(-mu_c)))
         if self._family == "poisson":
             # `y * log(y / mu)` has the conventional limit 0 when y = 0.
@@ -1409,7 +1435,8 @@ class GAM:
             mu_safe = np.where(mu > 0, mu, tiny)
             if w is None:
                 return float(
-                    2.0 * np.sum(-1.0 * np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe)
+                    2.0
+                    * np.sum(-1.0 * np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe)
                 )
             return float(
                 2.0 * w.dot(-1.0 * np.log(y_safe / mu_safe) + (y - mu_safe) / mu_safe)
@@ -1684,31 +1711,37 @@ class GAM:
             if j > max_replication:
                 max_replication = j
 
-        if (num_cc_with_replicates >= min_cc_replicates
-             and max_replication >= min_replication):
+        if (
+            num_cc_with_replicates >= min_cc_replicates
+            and max_replication >= min_replication
+        ):
             has_replication = True
         else:
             has_replication = False
 
-        if (num_cc_with_replicates >= des_cc_replicates
-             and max_replication >= des_replication
-             and replication_dof >= des_replication_dof):
+        if (
+            num_cc_with_replicates >= des_cc_replicates
+            and max_replication >= des_replication
+            and replication_dof >= des_replication_dof
+        ):
             has_desired_replication = True
         else:
             has_desired_replication = False
 
         if formula is None:
             if has_desired_replication:
-                formula = 'replication'
+                formula = "replication"
             else:
-                formula = 'pearson'
+                formula = "pearson"
 
         if has_replication and formula == "replication":
             trials: dict[int, float] = {}
             successes: dict[int, float] = {}
             for i in range(self._num_obs):
                 cci = int(covariate_class[i])
-                trials[cci] = trials.get(cci, 0.0) + float(self._covariate_class_sizes[i])
+                trials[cci] = trials.get(cci, 0.0) + float(
+                    self._covariate_class_sizes[i]
+                )
                 successes[cci] = successes.get(cci, 0.0) + float(self._y[i])
 
             s2 = 0.0
@@ -1790,7 +1823,7 @@ class GAM:
 
         # Note that the deviance is twice the dispersion times the
         # log-likelihood, so no factor of two required there.
-        return self.deviance() / self.dispersion() + 2. * p
+        return self.deviance() / self.dispersion() + 2.0 * p
         # return (self.deviance() / self._num_obs
         #          + 2. * p * self.dispersion() / self._num_obs)
 
@@ -1882,7 +1915,7 @@ class GAM:
         to force smoother fits by exaggerating the effective degrees of
         freedom. In that case, a value of gamma > 1. may be desirable.
         """
-        return self.deviance() + 2. * gamma * self.dispersion() * self.dof()
+        return self.deviance() + 2.0 * gamma * self.dispersion() * self.dof()
 
     def gcv(self, gamma: float = 1.0) -> float:
         """Generalized Cross Validation

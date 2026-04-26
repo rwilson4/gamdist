@@ -153,7 +153,11 @@ def _prox_binomial(
         def obj_fun(x: float, _v: float, _y: float) -> float:
             ilx = inv_link(x)
             m = 1.0
-            return (_y - m) * np.log1p(-ilx) - _y * np.log(ilx) + 0.5 * mu * (x - _v) * (x - _v)
+            return (
+                (_y - m) * np.log1p(-ilx)
+                - _y * np.log(ilx)
+                + 0.5 * mu * (x - _v) * (x - _v)
+            )
 
         return np.array(
             [minimize_scalar(obj_fun, args=(v[i], y[i])).x for i in range(len(v))]
@@ -353,7 +357,9 @@ def _prox_inv_gaussian_reciprocal_squared(
         items = [tuple(t) for t in zip(v, mu_arr, y, strict=True)]
     else:
         items = [tuple(t) for t in zip(v, mu_arr, y, w, strict=True)]
-    return np.array([_prox_inv_gaussian_reciprocal_squared_scalar(item) for item in items])
+    return np.array(
+        [_prox_inv_gaussian_reciprocal_squared_scalar(item) for item in items]
+    )
 
 
 def _prox_inv_gaussian(
