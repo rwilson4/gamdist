@@ -3,8 +3,8 @@
 A modular toolkit for the GLM/GAM zoo — binary, continuous, or count
 outcomes; continuous, categorical, or spline-transformed features;
 arbitrary regularization (ridge, L1, group lasso, network lasso,
-curvature penalties) attached to whichever terms want it. Every model is
-a single convex optimization problem.
+network ridge, curvature penalties) attached to whichever terms want
+it. Every model is a single convex optimization problem.
 
 The joint Hessian for that problem is intractable to derive and solve as
 a monolith. The ADMM decomposition of [Chu, Keshavarz, Boyd][gamadmm]
@@ -29,8 +29,10 @@ applied inside the per-feature ADMM step:
   ridge (`l2`).
 - **`categorical`** — per-level offset for a categorical feature.
   Supports `l1`, `l2`, group lasso (`group_lasso`) for variable
-  selection, and **network lasso** (`network_lasso`) for clustering
-  connected categories to identical coefficients.
+  selection, **network lasso** (`network_lasso`) for clustering
+  connected categories to identical coefficients, and **network
+  ridge** (`network_ridge`) for smoothly shrinking connected
+  categories toward each other.
 - **`spline`** — cubic regression spline with an integrated curvature
   penalty. Smoothing is set via `rel_dof`, the target effective degrees
   of freedom.
@@ -114,6 +116,12 @@ mdl.add_feature(
 mdl.fit(X, y)
 mdl.summary()
 ```
+
+Swap `network_lasso` for `network_ridge` on the same edges DataFrame
+to get the smooth-shrinkage variant: a quadratic penalty
+`λ · Σ w_ij · (β_i − β_j)²` (= `λ · βᵀ L β` for the graph Laplacian
+`L`) that pulls neighboring coefficients *toward* each other instead
+of clustering them to identical values.
 
 ## Development
 

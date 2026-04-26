@@ -1,3 +1,31 @@
+2026-04-26 : Network ridge regularizer for categorical features
+- _CategoricalFeature now accepts
+      regularization={"network_ridge": {"coef": lambda, "edges": edges}}
+  alongside the existing l1/l2/network_lasso/group_lasso options.
+- Penalty is the smooth-shrinkage sibling of network_lasso:
+      lambda * sum_{(i,j) in E} w_ij * (q_i - q_j)^2  =  lambda * q^T L q
+  where L is the (weighted) graph Laplacian of the edges. The penalty
+  is convex quadratic, so it lands as (2*lambda/rho) * L added to the
+  AtA Hessian inside the categorical cvxpy program -- no new cvxpy
+  variables or constraints. Lambda is scaled by the global `smoothing`
+  argument (matching the other categorical penalties).
+- Edges DataFrame uses the same node1 / node2 / weight schema accepted
+  by network_lasso. Categories appearing only in the edge list (not in
+  the training data) are still added to the feature's categories so
+  they get coefficients shrunk toward their neighbors.
+- Persisted across save/load. Older pickles default has_network_ridge
+  to False on load.
+- Tests in tests/test_categorical_network_ridge.py cover: missing-coef
+  / missing-edges error paths, smoothing scaling, Laplacian structure
+  (symmetric, row-sums-zero, PSD), lambda=0 parity with the
+  unpenalized solve, empty edges DataFrame parity with the
+  unpenalized solve, huge-lambda collapsing all coefficients to the
+  zero-sum-constrained constant, intermediate-lambda shrinkage of
+  neighbor differences, save/load round-trip, an end-to-end test
+  where network ridge beats plain L2 on a noisily under-sampled
+  region in a smooth-along-the-chain spatial signal, and a
+  combined-with-L2 sanity check. Closes #36.
+
 2026-04-26 : Group lasso for linear and spline features
 - _LinearFeature and _SplineFeature now accept
       regularization={"group_lasso": {"coef": lambda}}

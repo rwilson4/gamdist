@@ -54,8 +54,8 @@ class _CategoricalFeature(_Feature):
             Name for feature, used to make plots.
         regularization : dict
             Description of regularization terms (``l1``, ``l2``,
-            ``group_lasso``, ``network_lasso``). See the package
-            README for details.
+            ``group_lasso``, ``network_lasso``, ``network_ridge``).
+            See the package README for details.
         load_from_file : str
             Pickle path used to restore parameters. If specified,
             other parameters are ignored.
@@ -76,13 +76,16 @@ class _CategoricalFeature(_Feature):
         self._has_l1 = False
         self._has_l2 = False
         self._has_network_lasso = False
+        self._has_network_ridge = False
         self._has_group_lasso = False
         self._has_prior = False
         self._coef1: float | dict[Any, float] = 0.0
         self._coef2: float | dict[Any, float] = 0.0
         self._lambda_network_lasso: float = 0.0
+        self._lambda_network_ridge: float = 0.0
         self._lambda_group_lasso: float = 0.0
         self._num_edges: int = 0
+        self._num_edges_ridge: int = 0
         if regularization is not None:
             if "l1" in regularization:
                 self._has_l1 = True
@@ -124,6 +127,30 @@ class _CategoricalFeature(_Feature):
                 else:
                     raise ValueError(
                         "Edges not specified for Network Lasso regularization term."
+                    )
+
+            if "network_ridge" in regularization:
+                self._has_network_ridge = True
+                if "coef" in regularization["network_ridge"]:
+                    self._lambda_network_ridge = float(
+                        regularization["network_ridge"]["coef"]
+                    )
+                else:
+                    raise ValueError(
+                        "No coefficient specified for Network Ridge regularization term."
+                    )
+
+                if "edges" in regularization["network_ridge"]:
+                    self._edges_ridge = regularization["network_ridge"]["edges"]
+                    self._num_edges_ridge, _ = self._edges_ridge.shape
+                    for _, row in self._edges_ridge.iterrows():
+                        if row["node1"] not in self._categories:
+                            self._categories.append(row["node1"])
+                        if row["node2"] not in self._categories:
+                            self._categories.append(row["node2"])
+                else:
+                    raise ValueError(
+                        "Edges not specified for Network Ridge regularization term."
                     )
 
             if "group_lasso" in regularization:
@@ -178,6 +205,29 @@ class _CategoricalFeature(_Feature):
             self._D = sparse.coo_matrix(D).tocsr()
             self._lambda_network_lasso *= smoothing
 
+        if self._has_network_ridge:
+            # Build the (weighted) graph Laplacian L so the penalty
+            # lambda * sum_{(i,j) in E} w_ij * (q_i - q_j)^2 equals
+            # lambda * q^T L q. Symmetric PSD by construction, so the
+            # Hessian contribution (2 lambda / rho) * L keeps the
+            # subproblem convex.
+            _, em = self._edges_ridge.shape
+            rows: list[int] = []
+            cols: list[int] = []
+            data: list[float] = []
+            for _, row in self._edges_ridge.iterrows():
+                i = self._category_hash[row["node1"]]
+                j = self._category_hash[row["node2"]]
+                w = float(row["weight"]) if em >= 3 else 1.0
+                rows += [i, j, i, j]
+                cols += [i, j, j, i]
+                data += [w, w, -w, -w]
+            self._L = sparse.coo_matrix(
+                (data, (rows, cols)),
+                shape=(self._num_categories, self._num_categories),
+            ).tocsr()
+            self._lambda_network_ridge *= smoothing
+
         if na_signifier is not None and na_signifier in self._categories:
             self._na_index = self._category_hash[na_signifier]
         else:
@@ -223,6 +273,8 @@ class _CategoricalFeature(_Feature):
             print(f"Number of categories: {self._num_categories:d}")
             if self._has_network_lasso:
                 print(f"Number of edges: {self._num_edges:d}")
+            if self._has_network_ridge:
+                print(f"Number of network-ridge edges: {self._num_edges_ridge:d}")
 
         if save_flag:
             self._save_self = True
@@ -265,6 +317,7 @@ class _CategoricalFeature(_Feature):
             "has_l1": self._has_l1,
             "has_l2": self._has_l2,
             "has_network_lasso": self._has_network_lasso,
+            "has_network_ridge": self._has_network_ridge,
             "has_group_lasso": self._has_group_lasso,
             "has_prior": self._has_prior,
             "na_index": self._na_index,
@@ -289,6 +342,11 @@ class _CategoricalFeature(_Feature):
             mv["D"] = self._D
             mv["edges"] = self._edges
             mv["lambda_network_lasso"] = self._lambda_network_lasso
+        if self._has_network_ridge:
+            mv["num_edges_ridge"] = self._num_edges_ridge
+            mv["L"] = self._L
+            mv["edges_ridge"] = self._edges_ridge
+            mv["lambda_network_ridge"] = self._lambda_network_ridge
         if self._has_group_lasso:
             mv["lambda_group_lasso"] = self._lambda_group_lasso
         if self._has_prior:
@@ -323,6 +381,16 @@ class _CategoricalFeature(_Feature):
             if "edges" in mv:
                 self._edges = mv["edges"]
             self._lambda_network_lasso = mv["lambda_network_lasso"]
+        # has_network_ridge was added later; default to False for older pickles.
+        self._has_network_ridge = mv.get("has_network_ridge", False)
+        if self._has_network_ridge:
+            self._num_edges_ridge = mv["num_edges_ridge"]
+            self._L = mv["L"]
+            if "edges_ridge" in mv:
+                self._edges_ridge = mv["edges_ridge"]
+            self._lambda_network_ridge = mv["lambda_network_ridge"]
+        else:
+            self._lambda_network_ridge = 0.0
         # has_group_lasso was added later; default to False for older pickles.
         self._has_group_lasso = mv.get("has_group_lasso", False)
         if self._has_group_lasso:
@@ -366,16 +434,17 @@ class _CategoricalFeature(_Feature):
 
         q = cvx.Variable(self._num_categories)
 
+        ata_matrix: Any = self._AtA
         if self._has_l2:
-            AtA = cvx.Constant(
-                self._AtA
-                + sparse.dia_matrix(
-                    ((2.0 / rho) * self._lambda2, 0),
-                    shape=(self._num_categories, self._num_categories),
-                )
+            ata_matrix = ata_matrix + sparse.dia_matrix(
+                ((2.0 / rho) * self._lambda2, 0),
+                shape=(self._num_categories, self._num_categories),
             )
-        else:
-            AtA = cvx.Constant(self._AtA)
+        if self._has_network_ridge:
+            ata_matrix = (
+                ata_matrix + ((2.0 / rho) * self._lambda_network_ridge) * self._L
+            )
+        AtA = cvx.Constant(ata_matrix)
 
         Atb_const = cvx.Constant(Atb)
 
