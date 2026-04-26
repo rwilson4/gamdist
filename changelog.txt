@@ -1,3 +1,16 @@
+2026-04-26 : Reformulate inv_gaussian + reciprocal_squared prox in eta space
+- _prox_inv_gaussian_reciprocal_squared_scalar now iterates Newton in
+  eta = z^2, the natural convex coordinate for this prox. The Hessian
+  in eta is 0.25*w*eta^(-3/2) + mu, strictly positive for w, mu, eta
+  > 0, so Newton converges monotonically from any positive starting
+  point. The damped-Newton-with-backtracking and minimize_scalar
+  fallback added in #42 are gone — the only safeguard now is halving
+  the Newton step when it would push eta non-positive. Function
+  returns eta directly instead of z*z. The eta-space reference test
+  added in #42 (test_prox_inv_gaussian_reciprocal_squared_matches_eta_minimization)
+  continues to pass without modification, as does the robustness grid.
+  Closes #52.
+
 2026-04-26 : Reject l1 regularization on linear features
 - _LinearFeature.__init__ now raises ValueError if the user passes
   regularization={"l1": ...}. The L1 coefficient was previously stored
