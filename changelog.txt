@@ -1,3 +1,54 @@
+2026-04-26 : Convex shape constraints on feature coefficients
+- Added a `constraints={...}` keyword to `GAM.add_feature` and to each
+  feature class. Supported keys: `sign` (`"nonnegative"` /
+  `"nonpositive"`), `lower` / `upper` (floats), `monotonic`
+  (`"increasing"` / `"decreasing"`), `convex`, and `concave`. All are
+  linear inequality constraints, so every per-feature subproblem stays
+  convex (CLAUDE.md North Star).
+- _LinearFeature: only sign / lower / upper apply (a single slope has no
+  meaningful monotonicity / curvature). The closed-form 1-D optimum is
+  projected onto `[lower, upper]` -- a no-op when the unconstrained
+  minimum is already feasible. No cvxpy on this path; the new step is a
+  one-line clip after the existing soft-threshold / Huber math.
+- _CategoricalFeature: drops linear-inequality terms into the existing
+  cvxpy program. `lower` / `upper` clip every `q_c`. `monotonic` /
+  `convex` / `concave` require an `order` list of category labels and
+  emit consecutive-difference / second-difference constraints along
+  that order. The implicit zero-sum constraint is preserved, so one-
+  sided sign constraints collapse the entire vector to zero -- they
+  exist for symmetry and for the regulated "no negative effects"
+  interpretation. Categories appearing only in the order list are
+  added to the feature's known category set so the optimize step can
+  reference their indices.
+- _SplineFeature: shape constraints land on the spline evaluated at the
+  knots `xi`. `initialize` now also stores the basis matrix `N_xi` of
+  shape (K, K) so the optimize step can express
+  `f_xi = N_xi @ theta` cheaply. `lower` / `upper` clip the knot
+  values; `monotonic` / `convex` / `concave` use `cvx.diff` to encode
+  consecutive / second differences along the sorted knots. Constraint
+  enforcement at the knots is a near-global proxy for a smooth cubic
+  spline. `optimize()` routes through `_optimize_cvx` whenever
+  constraints (or either group lasso) is active; the closed-form
+  Cholesky path is preserved when none are active. The constrained
+  QP can hit CLARABEL's numerical-tolerance failure on dense knot
+  grids with many active inequality constraints, so `_optimize_cvx`
+  catches `cvx.SolverError` and retries with SCS once before
+  surfacing the failure.
+- Save / load round-trips for all three feature types updated; older
+  pickles default `has_constraints` to False with empty bounds /
+  ordering. `_SplineFeature._load` rebuilds `N_xi` from the persisted
+  knots when loading older pickles that don't store it.
+- gamdist.add_feature gained docstring text describing the new kwarg.
+- Tests in `tests/test_constraints.py` cover: API validation paths
+  (unknown keys, sign / lower-upper exclusivity, sign on linear,
+  monotonic on linear, missing order on categorical, duplicates /
+  too-short order, mutually-exclusive convex / concave, inverted
+  bounds), unconstrained-violates-constraint demonstrations for each
+  constraint type, save/load round-trips for all three feature types,
+  and end-to-end GAM fits (linear sign clipping, categorical
+  monotonic-increasing across three levels, spline monotonic on a
+  triangle-wave dose-response signal).
+
 2026-04-26 : Huber penalty regularizer for linear and categorical features
 - Added regularization={"huber": {"coef": lambda, "delta": delta}} to
   _LinearFeature and _CategoricalFeature. The penalty
