@@ -683,8 +683,13 @@ class GAM:
              zero it out. ``group_lasso_inf`` is the L_∞-norm variant
              (``λ · ‖f_j‖_∞``); it produces a clipping rather than a
              uniform contraction and is also available on linear and
-             categorical features. Other features have more diverse
-             options described in their own documentation.
+             categorical features. ``huber`` is a bounded-influence
+             ridge analogue: ``regularization={"huber": {"coef": λ,
+             "delta": δ}}`` adds ``λ · h_δ(coef)`` per parameter, with
+             ``h_δ`` quadratic for small magnitudes and linear beyond
+             ``δ``. Available on linear and categorical features.
+             Other features have more diverse options described in
+             their own documentation.
 
         Returns
         -------

@@ -59,11 +59,19 @@ class _LinearFeature(_Feature):
             ``{"coef": λ}`` and adds ``λ · |m|`` to the objective,
             shrinking the slope toward zero with a closed-form 1-D
             soft-threshold. ``l2`` (ridge) takes ``{"coef": λ}`` and
-            adds ``λ · m²`` to the objective. ``group_lasso`` takes
-            ``{"coef": λ}`` and adds ``λ · ‖f_j‖₂ = λ · |m| · √(xᵀx)``
-            to the objective, which zeros out the entire feature once
-            ``λ`` is large enough. ``group_lasso_inf`` takes
-            ``{"coef": λ}`` and adds ``λ · ‖f_j‖_∞ = λ · |m| ·
+            adds ``λ · m²`` to the objective. ``huber`` takes
+            ``{"coef": λ, "delta": δ}`` and adds ``λ · h_δ(m)`` to
+            the objective, where ``h_δ`` is the standard Huber
+            function (``0.5·m²`` for ``|m| ≤ δ``, ``δ·|m| - 0.5·δ²``
+            otherwise). It behaves like ridge for small slopes and
+            like L1 for large slopes, bounding the per-coefficient
+            influence of the penalty. ``huber`` may be combined with
+            ``l2`` (both smooth at the origin) but not with ``l1`` /
+            ``group_lasso`` / ``group_lasso_inf``. ``group_lasso``
+            takes ``{"coef": λ}`` and adds ``λ · ‖f_j‖₂ = λ · |m| ·
+            √(xᵀx)`` to the objective, which zeros out the entire
+            feature once ``λ`` is large enough. ``group_lasso_inf``
+            takes ``{"coef": λ}`` and adds ``λ · ‖f_j‖_∞ = λ · |m| ·
             max|x - x̄|``, the L_∞-norm variant of the group lasso;
             on a single-slope feature it has the same zero-the-slope
             effect as the L2 group lasso, but the threshold scales
@@ -96,6 +104,7 @@ class _LinearFeature(_Feature):
 
         self._has_l1 = False
         self._has_l2 = False
+        self._has_huber = False
         self._has_group_lasso = False
         self._has_group_lasso_inf = False
         self._has_prior = False
@@ -103,6 +112,9 @@ class _LinearFeature(_Feature):
         self._coef2: float = 0.0
         self._lambda1: float = 0.0
         self._lambda2: float = 0.0
+        self._coef_huber: float = 0.0
+        self._lambda_huber: float = 0.0
+        self._delta_huber: float = 0.0
         self._coef_group_lasso: float = 0.0
         self._lambda_group_lasso: float = 0.0
         self._coef_group_lasso_inf: float = 0.0
@@ -148,6 +160,28 @@ class _LinearFeature(_Feature):
                 else:
                     raise ValueError(
                         "No coefficient specified for group_lasso_inf regularization term."
+                    )
+
+            if "huber" in regularization:
+                self._has_huber = True
+                if "coef" not in regularization["huber"]:
+                    raise ValueError(
+                        "No coefficient specified for huber regularization term."
+                    )
+                if "delta" not in regularization["huber"]:
+                    raise ValueError(
+                        "No delta specified for huber regularization term."
+                    )
+                self._coef_huber = float(regularization["huber"]["coef"])
+                self._delta_huber = float(regularization["huber"]["delta"])
+                if self._coef_huber < 0.0:
+                    raise ValueError("huber coefficient must be non-negative.")
+                if self._delta_huber <= 0.0:
+                    raise ValueError("huber delta must be positive.")
+                if self._has_l1 or self._has_group_lasso or self._has_group_lasso_inf:
+                    raise ValueError(
+                        "huber regularization on a linear feature cannot be "
+                        "combined with l1, group_lasso, or group_lasso_inf."
                     )
 
             if self._has_l1 or self._has_l2:
@@ -201,6 +235,8 @@ class _LinearFeature(_Feature):
             self._lambda1 = self._coef1 * smoothing
         if self._has_l2:
             self._lambda2 = self._coef2 * smoothing
+        if self._has_huber:
+            self._lambda_huber = self._coef_huber * smoothing
         if self._has_group_lasso:
             self._lambda_group_lasso = self._coef_group_lasso * smoothing
         if self._has_group_lasso_inf:
@@ -225,6 +261,7 @@ class _LinearFeature(_Feature):
             "has_transform": self._has_transform,
             "has_l1": self._has_l1,
             "has_l2": self._has_l2,
+            "has_huber": self._has_huber,
             "has_group_lasso": self._has_group_lasso,
             "has_group_lasso_inf": self._has_group_lasso_inf,
             "has_prior": self._has_prior,
@@ -246,6 +283,10 @@ class _LinearFeature(_Feature):
         if self._has_l2:
             mv["coef2"] = self._coef2
             mv["lambda2"] = self._lambda2
+        if self._has_huber:
+            mv["coef_huber"] = self._coef_huber
+            mv["lambda_huber"] = self._lambda_huber
+            mv["delta_huber"] = self._delta_huber
         if self._has_group_lasso:
             mv["coef_group_lasso"] = self._coef_group_lasso
             mv["lambda_group_lasso"] = self._lambda_group_lasso
@@ -277,6 +318,16 @@ class _LinearFeature(_Feature):
         if self._has_l2:
             self._coef2 = mv["coef2"]
             self._lambda2 = mv["lambda2"]
+        # has_huber added later; default to False for older pickles.
+        self._has_huber = mv.get("has_huber", False)
+        if self._has_huber:
+            self._coef_huber = mv["coef_huber"]
+            self._lambda_huber = mv["lambda_huber"]
+            self._delta_huber = mv["delta_huber"]
+        else:
+            self._coef_huber = 0.0
+            self._lambda_huber = 0.0
+            self._delta_huber = 0.0
         # has_group_lasso added later; default to False for older pickles.
         self._has_group_lasso = mv.get("has_group_lasso", False)
         if self._has_group_lasso:
@@ -336,30 +387,45 @@ class _LinearFeature(_Feature):
 
         b = float(self._x.dot(y))
 
-        # L1 (lambda1 * |m|), L2 group lasso (lambda_gl * |m| * sqrt(xtx)),
-        # and L_inf group lasso (lambda_gl_inf * |m| * max|x - xmean|) all
-        # contribute additively to a 1-D soft-threshold on `b` -- they are
-        # each a positive multiple of |m|. With ridge present, the
-        # shrinkage is the elastic-net closed form:
-        # m = sign(b) * max(|b| - threshold, 0) / denom, and m = 0 when
-        # |b| <= threshold.
-        threshold = 0.0
-        if self._has_l1:
-            threshold += self._lambda1 / rho
-        if self._has_group_lasso:
-            threshold += self._lambda_group_lasso * math.sqrt(self._xtx) / rho
-        if self._has_group_lasso_inf:
-            threshold += self._lambda_group_lasso_inf * self._x_inf / rho
-
-        if threshold > 0.0:
-            if b > threshold:
-                self._m = (b - threshold) / denom
-            elif b < -threshold:
-                self._m = (b + threshold) / denom
+        if self._has_huber:
+            # Huber penalty lambda_h * h_delta(m) is quadratic
+            # (lambda_h * m^2 / 2) for |m| <= delta and linear
+            # (lambda_h * delta * |m| - const) outside that band. Composes
+            # additively with optional ridge; the construction-time guard
+            # rules out l1 / group_lasso variants on this branch.
+            denom_quad = denom + self._lambda_huber / rho
+            m_quad = b / denom_quad
+            if abs(m_quad) <= self._delta_huber:
+                self._m = m_quad
+            elif m_quad > self._delta_huber:
+                self._m = (b - self._lambda_huber * self._delta_huber / rho) / denom
             else:
-                self._m = 0.0
+                self._m = (b + self._lambda_huber * self._delta_huber / rho) / denom
         else:
-            self._m = b / denom
+            # L1 (lambda1 * |m|), L2 group lasso (lambda_gl * |m| * sqrt(xtx)),
+            # and L_inf group lasso (lambda_gl_inf * |m| * max|x - xmean|) all
+            # contribute additively to a 1-D soft-threshold on `b` -- they are
+            # each a positive multiple of |m|. With ridge present, the
+            # shrinkage is the elastic-net closed form:
+            # m = sign(b) * max(|b| - threshold, 0) / denom, and m = 0 when
+            # |b| <= threshold.
+            threshold = 0.0
+            if self._has_l1:
+                threshold += self._lambda1 / rho
+            if self._has_group_lasso:
+                threshold += self._lambda_group_lasso * math.sqrt(self._xtx) / rho
+            if self._has_group_lasso_inf:
+                threshold += self._lambda_group_lasso_inf * self._x_inf / rho
+
+            if threshold > 0.0:
+                if b > threshold:
+                    self._m = (b - threshold) / denom
+                elif b < -threshold:
+                    self._m = (b + threshold) / denom
+                else:
+                    self._m = 0.0
+            else:
+                self._m = b / denom
 
         self._b = -self._m * self._xmean
 

@@ -54,12 +54,18 @@ class _CategoricalFeature(_Feature):
             Name for feature, used to make plots.
         regularization : dict
             Description of regularization terms (``l1``, ``l2``,
-            ``group_lasso``, ``group_lasso_inf``, ``network_lasso``,
-            ``network_ridge``). The ``group_lasso_inf`` variant
-            penalizes ``λ · ‖A q‖_∞ = λ · max_{c with obs} |q_c|``,
-            which clips the largest per-level effect rather than the
-            uniform L2 contraction induced by ``group_lasso``. See
-            the package README for details.
+            ``huber``, ``group_lasso``, ``group_lasso_inf``,
+            ``network_lasso``, ``network_ridge``). The
+            ``group_lasso_inf`` variant penalizes ``λ · ‖A q‖_∞ =
+            λ · max_{c with obs} |q_c|``, which clips the largest
+            per-level effect rather than the uniform L2 contraction
+            induced by ``group_lasso``. ``huber`` takes ``{"coef":
+            λ, "delta": δ}`` (with ``coef`` either a scalar or a
+            per-category dict, like ``l2``) and adds
+            ``λ_c · h_δ(q_c)`` per category, where ``h_δ`` is the
+            standard Huber function — ridge for ``|q_c| ≤ δ``,
+            linear with slope ``λ_c · δ`` outside. See the package
+            README for details.
         load_from_file : str
             Pickle path used to restore parameters. If specified,
             other parameters are ignored.
@@ -79,6 +85,7 @@ class _CategoricalFeature(_Feature):
         self._categories: list[Any] = []
         self._has_l1 = False
         self._has_l2 = False
+        self._has_huber = False
         self._has_network_lasso = False
         self._has_network_ridge = False
         self._has_group_lasso = False
@@ -86,6 +93,8 @@ class _CategoricalFeature(_Feature):
         self._has_prior = False
         self._coef1: float | dict[Any, float] = 0.0
         self._coef2: float | dict[Any, float] = 0.0
+        self._coef_huber: float | dict[Any, float] = 0.0
+        self._delta_huber: float = 0.0
         self._lambda_network_lasso: float = 0.0
         self._lambda_network_ridge: float = 0.0
         self._lambda_group_lasso: float = 0.0
@@ -181,6 +190,21 @@ class _CategoricalFeature(_Feature):
                         "No coefficient specified for group_lasso_inf regularization term."
                     )
 
+            if "huber" in regularization:
+                self._has_huber = True
+                if "coef" not in regularization["huber"]:
+                    raise ValueError(
+                        "No coefficient specified for huber regularization term."
+                    )
+                if "delta" not in regularization["huber"]:
+                    raise ValueError(
+                        "No delta specified for huber regularization term."
+                    )
+                self._coef_huber = regularization["huber"]["coef"]
+                self._delta_huber = float(regularization["huber"]["delta"])
+                if self._delta_huber <= 0.0:
+                    raise ValueError("huber delta must be positive.")
+
             if (self._has_l1 or self._has_l2) and "prior" in regularization:
                 self._has_prior = True
                 self._prior: Any = regularization["prior"]
@@ -270,6 +294,17 @@ class _CategoricalFeature(_Feature):
         if self._has_group_lasso_inf:
             self._lambda_group_lasso_inf *= smoothing
 
+        self._lambda_huber_vec: FloatArray = np.zeros(self._num_categories)
+        if self._has_huber:
+            if isinstance(self._coef_huber, (int, float)):
+                self._lambda_huber_vec[:] = float(self._coef_huber) * smoothing
+            else:
+                for key, value in self._coef_huber.items():
+                    if key in self._category_hash:
+                        self._lambda_huber_vec[self._category_hash[key]] = (
+                            float(value) * smoothing
+                        )
+
         if (self._has_l1 or self._has_l2) and self._has_prior:
             prior_vec = np.zeros(self._num_categories)
             for key, value in self._prior.items():
@@ -336,6 +371,7 @@ class _CategoricalFeature(_Feature):
             "category_hash": self._category_hash,
             "has_l1": self._has_l1,
             "has_l2": self._has_l2,
+            "has_huber": self._has_huber,
             "has_network_lasso": self._has_network_lasso,
             "has_network_ridge": self._has_network_ridge,
             "has_group_lasso": self._has_group_lasso,
@@ -372,6 +408,10 @@ class _CategoricalFeature(_Feature):
             mv["lambda_group_lasso"] = self._lambda_group_lasso
         if self._has_group_lasso_inf:
             mv["lambda_group_lasso_inf"] = self._lambda_group_lasso_inf
+        if self._has_huber:
+            mv["coef_huber"] = self._coef_huber
+            mv["delta_huber"] = self._delta_huber
+            mv["lambda_huber_vec"] = self._lambda_huber_vec
         if self._has_prior:
             mv["prior"] = self._prior
 
@@ -426,6 +466,16 @@ class _CategoricalFeature(_Feature):
             self._lambda_group_lasso_inf = mv["lambda_group_lasso_inf"]
         else:
             self._lambda_group_lasso_inf = 0.0
+        # has_huber added later; default to False for older pickles.
+        self._has_huber = mv.get("has_huber", False)
+        if self._has_huber:
+            self._coef_huber = mv["coef_huber"]
+            self._delta_huber = mv["delta_huber"]
+            self._lambda_huber_vec = mv["lambda_huber_vec"]
+        else:
+            self._coef_huber = 0.0
+            self._delta_huber = 0.0
+            self._lambda_huber_vec = np.zeros(self._num_categories)
         self._has_prior = mv["has_prior"]
         if self._has_prior:
             self._prior = mv["prior"]
@@ -525,6 +575,20 @@ class _CategoricalFeature(_Feature):
             mask = cvx.Constant((self._ccs > 0).astype(float))
             obj = obj + (2.0 / rho) * self._lambda_group_lasso_inf * cvx.norm_inf(
                 cvx.multiply(mask, q)
+            )
+
+        if self._has_huber:
+            # cvxpy's huber atom is huber(x, M) = x^2 if |x|<=M else
+            # 2*M*|x| - M^2, i.e. 2x the standard 0.5-leading Huber.
+            # Standard penalty per category is lambda_c * h_delta(q_c) =
+            # 0.5 * lambda_c * cvx.huber(q_c, delta); folded into the
+            # (2/rho)-scaled obj formulation that's (lambda_c/rho) *
+            # cvx.huber(q_c, delta) summed.
+            # cvxpy's huber atom is annotated as `M: int = 1` even though
+            # the implementation runs `cast_to_const(M)` and accepts any
+            # nonnegative scalar. Silence the stub mismatch.
+            obj = obj + (1.0 / rho) * (
+                cvx.Constant(self._lambda_huber_vec) @ cvx.huber(q, self._delta_huber)  # type: ignore[arg-type]
             )
 
         prob = cvx.Problem(cvx.Minimize(obj), constraints)
