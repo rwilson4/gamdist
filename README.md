@@ -94,10 +94,8 @@ from gamdist import GAM
 regions = [f"r{i:02d}" for i in range(12)]
 true_effect = dict(zip(regions, np.linspace(-1.0, 1.0, len(regions))))
 
-# Edges describe the adjacency graph; column names "country1" / "country2"
-# are required by the current API, with an optional "weight" column.
 edges = pd.DataFrame(
-    {"country1": regions[:-1], "country2": regions[1:], "weight": 1.0}
+    {"node1": regions[:-1], "node2": regions[1:], "weight": 1.0}
 )
 
 n = 2000

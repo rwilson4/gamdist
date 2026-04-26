@@ -47,7 +47,7 @@ def test_network_lasso_edges_persisted(tmp_path: Path) -> None:
     rng = np.random.default_rng(0)
     regions = [f"r{i:02d}" for i in range(6)]
     edges = pd.DataFrame(
-        {"country1": regions[:-1], "country2": regions[1:], "weight": 1.0}
+        {"node1": regions[:-1], "node2": regions[1:], "weight": 1.0}
     )
     n = 200
     X = pd.DataFrame({"r": rng.choice(regions, size=n)})

@@ -111,10 +111,10 @@ class _CategoricalFeature(_Feature):
                     self._edges = regularization["network_lasso"]["edges"]
                     self._num_edges, _ = self._edges.shape
                     for _, row in self._edges.iterrows():
-                        if row["country1"] not in self._categories:
-                            self._categories.append(row["country1"])
-                        if row["country2"] not in self._categories:
-                            self._categories.append(row["country2"])
+                        if row["node1"] not in self._categories:
+                            self._categories.append(row["node1"])
+                        if row["node2"] not in self._categories:
+                            self._categories.append(row["node2"])
                 else:
                     raise ValueError(
                         "Edges not specified for Network Lasso regularization term."
@@ -158,8 +158,8 @@ class _CategoricalFeature(_Feature):
             _, em = self._edges.shape
             ir = 0
             for _, row in self._edges.iterrows():
-                i = self._category_hash[row["country1"]]
-                j = self._category_hash[row["country2"]]
+                i = self._category_hash[row["node1"]]
+                j = self._category_hash[row["node2"]]
                 lmbda = float(row["weight"]) if em >= 3 else 1.0
                 D[ir, i] = lmbda
                 D[ir, j] = -lmbda
