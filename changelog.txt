@@ -1,3 +1,64 @@
+2026-04-27 : Multi-task GAM (joint fit across K outcomes with convex coupling)
+- Added MultiTaskGAM and a new feature module gamdist/multi_task_features.py
+  for fitting K supervised-learning tasks jointly under a shared feature set
+  with optional convex cross-task regularization. First slice in the design
+  RFC at issue #39: per-task (family, link), per-task n_k (different lengths
+  allowed), and one coupling penalty -- group-lasso across tasks on a linear
+  feature -- which zeros the feature simultaneously across all K tasks once
+  lambda is large enough. Coupling lives entirely inside the feature; the
+  orchestrator never sees a penalty coefficient (CLAUDE.md seam principle).
+- gamdist/multi_task_gamdist.py: MultiTaskGAM(families, links=None,
+  dispersions=None, name=None) holds K parallel ADMM-state lists (f_bar,
+  z_bar, u, offset, residual histories). add_feature(name, type='linear',
+  ...) is restricted to linear features in this slice; categorical/spline
+  can be added by analogy. fit([X_1,...,X_K], [y_1,...,y_K], weights=None,
+  smoothing=1.0, max_its=100) runs K-coupled ADMM: per iteration, each
+  multi-task feature's optimize_multi receives the K fpumz vectors and
+  returns K contributions; the proximal step is K independent calls of the
+  existing (family_k, link_k) prox via _optimize_task. Convergence requires
+  every task's primal/dual residual to drop below its own tolerance;
+  prim_res / dual_res accumulate the max across tasks for the trace.
+- gamdist/multi_task_features.py: _MultiTaskFeature ABC adds initialize_multi,
+  optimize_multi, predict_task, compute_dual_tol_task, num_params_task, and
+  dof_task; the single-task ABC methods (initialize / optimize / predict)
+  raise NotImplementedError so the orchestrator distinguishes the two paths
+  unambiguously. _MultiTaskLinearFeature owns one slope per task plus shared
+  data caches; without coupling the K subproblems decouple and reduce to K
+  independent 1-D least-squares solves matching _LinearFeature task-by-task.
+  regularization={"group_lasso_across_tasks": {"coef": lambda}} adds
+  lambda * sqrt(sum_k m_k^2 * xtx_k), the K-task generalization of the
+  single-task linear group-lasso. Closed-form prox in the change of
+  variables eta_k = m_k * sqrt(xtx_k): the penalty becomes lambda * ||eta||_2
+  and the per-task quadratic stays diagonal, so the standard L2
+  group-lasso shrinkage drops out: eta = max(0, 1 - lambda/(rho * ||b||_2)) * b.
+- predict accepts either a single DataFrame (same predictors for every task)
+  or a length-K list (per-task predictors) and returns a length-K list of
+  mean responses; deviance returns a length-K list and reuses the existing
+  per-family deviance math, parameterized by task index.
+- Out of scope for this slice (raise NotImplementedError on call): persistence
+  (save_flag / load_from_file), summary / plot / aic / aicc / gcv / ubre /
+  confidence_intervals, robust covariance, quantile / huber families,
+  covariate classes, the estimate_overdispersion path, and per-feature
+  tasks=[subset] routing. Other coupling penalties (nuclear / trace norm,
+  network lasso on a task graph, hierarchical pooling) are also deferred.
+- Tests in tests/test_multi_task_gam.py cover: feature-level validation
+  (zero tasks, unsupported regularization keys, missing / negative coef),
+  smoothing scaling, huge-lambda zeroing all K slopes simultaneously,
+  lambda=0 decoupling matches per-task OLS closed form, MultiTaskGAM
+  construction (empty / unknown / quantile families, mismatched links
+  length, unsupported (family, link) pair, canonical-link defaults,
+  per-task dispersions), and end-to-end fits: unequal n_k recovery, no-
+  coupling parity with two independently-fit GAMs, group-lasso uniformly
+  zeroing a noise feature in both tasks, mixed normal+identity /
+  binomial+logit fit and predict, predict accepting per-task DataFrames,
+  deviance(X, y) parity with the iterate-based form, predict-before-fit
+  guard, and NotImplementedError on summary / aic / aicc / gcv / ubre /
+  confidence_intervals plus the categorical feature-type rejection.
+  Closes the first slice of #39; follow-up issues to file: other coupling
+  penalties (#39 trace-norm / network-on-tasks / hierarchical pooling),
+  multi-task categorical / spline features, persistence, summary / plot,
+  and tasks=[subset] routing for mixed task-local / shared features.
+
 2026-04-26 : Adaptive (weighted) lasso wrapper
 - Added `fit_adaptive_lasso(gam, X, y, *, gamma=1.0, eps=1e-6, **fit_kwargs)`
   as a top-level helper exported from the `gamdist` package. It runs the
