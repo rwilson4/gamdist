@@ -20,6 +20,32 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
+"""Proximal operators for each supported ``(family, link)`` pair.
+
+The ADMM dual step in :meth:`gamdist.GAM._optimize` calls the proximal
+operator of the per-observation negative log-likelihood
+
+.. math::
+
+   \\mathrm{prox}_\\mu(v) := \\arg\\min_x\\, L(x) + \\frac{\\mu}{2}\\,
+   \\| x - v \\|_2^2
+
+for the model's family and link. Per the convexity-only design rule
+(CLAUDE.md), every dispatch entry corresponds to a convex
+subproblem and a dedicated solver:
+
+* normal + identity, gamma + reciprocal, quantile + identity, and
+  huber + identity have closed forms.
+* binomial + logit, poisson + log, and inverse-gaussian +
+  reciprocal-squared use damped Newton iterations on the scalar
+  dual update with a backtracking safeguard.
+
+All operators broadcast over their ``v``, ``y`` array inputs. Optional
+covariate-class sizes (``ccs``), observation weights (``w``), and the
+shape parameter for huber / quantile losses are passed through
+keyword arguments.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -42,12 +68,40 @@ def _prox_normal_identity(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
+    r"""Proximal operator for the Gaussian negative log-likelihood with
+    identity link.
+
+    Closed-form weighted-mean shrinkage:
+
+    .. math::
+
+       x^\ast = \frac{w y + \mu v}{w + \mu},
+
+    with :math:`w = 1` when ``w`` is ``None``. ``inv_link`` and ``p``
+    are accepted only to keep a uniform dispatch signature with the
+    iterative prox operators.
+    """
     if w is None:
         return (y + mu * v) / (1.0 + mu)
     return (w * y + mu * v) / (w + mu)
 
 
 def _prox_binomial_logit_scalar(xx: Sequence[float]) -> float:
+    r"""Scalar proximal operator for binomial + logit on one observation.
+
+    Solves
+
+    .. math::
+
+       \min_z\, w m\, \log(1 + e^z) - w y z +
+       \tfrac{1}{2} \mu (z - v)^2
+
+    via damped Newton with a backtracking line search, falling back to
+    :func:`scipy.optimize.minimize_scalar` only if Newton fails to
+    converge. ``xx`` packs ``(v, mu, y, m[, w])``; ``w`` defaults to 1
+    when omitted. Convex in :math:`z`, so the iteration is globally
+    convergent for any starting point.
+    """
     v = float(xx[0])
     mu = float(xx[1])
     y = float(xx[2])
@@ -96,6 +150,14 @@ def _prox_binomial_logit(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
+    """Vectorized proximal operator for the binomial + logit family.
+
+    Iterates :func:`_prox_binomial_logit_scalar` over every observation.
+    ``ccs`` are the covariate-class sizes (``m_i``); when ``None`` each
+    observation has ``m_i = 1`` (Bernoulli data). ``w`` is the
+    optional per-observation weight vector. ``inv_link`` and ``p`` are
+    accepted to keep a uniform dispatch signature.
+    """
     m = np.ones(y.shape) if ccs is None else ccs
     mu_arr = np.full(v.shape, mu)
     items: list[Sequence[float]]
@@ -107,6 +169,18 @@ def _prox_binomial_logit(
 
 
 def _prox_poisson_log_scalar(xx: Sequence[float]) -> float:
+    r"""Scalar proximal operator for Poisson + log on one observation.
+
+    Solves
+
+    .. math::
+
+       \min_z\, w e^z - w y z + \tfrac{1}{2} \mu (z - v)^2
+
+    via damped Newton with backtracking, falling back to
+    :func:`scipy.optimize.minimize_scalar` only if Newton fails. ``xx``
+    packs ``(v, mu, y[, w])``. Convex in :math:`z`.
+    """
     v = float(xx[0])
     mu = float(xx[1])
     y = float(xx[2])
@@ -147,6 +221,10 @@ def _prox_poisson_log(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
+    """Vectorized proximal operator for the Poisson + log family.
+
+    Iterates :func:`_prox_poisson_log_scalar` over every observation.
+    """
     mu_arr = np.full(v.shape, mu)
     items: list[Sequence[float]]
     if w is None:
@@ -164,6 +242,18 @@ def _prox_gamma_reciprocal(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
+    r"""Proximal operator for the gamma + reciprocal family.
+
+    Closed form derived from the quadratic in :math:`x`:
+
+    .. math::
+
+       x^\ast = \frac{\mu v - w y}{2 \mu} +
+       \sqrt{\Bigl(\frac{\mu v - w y}{2 \mu}\Bigr)^2 +
+       \frac{w}{\mu}}.
+
+    With ``w`` set to 1 when ``None``.
+    """
     if w is None:
         mu_v_minus_w_y = mu * v - y
         return (0.5 / mu) * mu_v_minus_w_y + np.sqrt(
@@ -176,6 +266,21 @@ def _prox_gamma_reciprocal(
 
 
 def _prox_inv_gaussian_reciprocal_squared_scalar(xx: Sequence[float]) -> float:
+    r"""Scalar proximal operator for inverse-gaussian + reciprocal-squared.
+
+    Reparameterizes in :math:`\eta = z^2`, where the objective becomes
+
+    .. math::
+
+       F(\eta) = \tfrac{1}{2} w y \eta - w \sqrt{\eta} +
+       \tfrac{1}{2} \mu (\eta - v)^2,
+
+    which has positive Hessian everywhere on
+    :math:`\eta > 0`, so Newton from any positive starting point
+    converges. The only safeguard is keeping :math:`\eta` strictly
+    positive across steps. Raises :class:`ValueError` if Newton fails
+    to converge in 100 iterations.
+    """
     v = float(xx[0])
     mu = float(xx[1])
     y = float(xx[2])
@@ -220,6 +325,11 @@ def _prox_inv_gaussian_reciprocal_squared(
     inv_link: InvLink | None = None,
     p: Any = None,
 ) -> FloatArray:
+    """Vectorized prox for the inverse-gaussian + reciprocal-squared family.
+
+    Iterates :func:`_prox_inv_gaussian_reciprocal_squared_scalar` over
+    every observation.
+    """
     mu_arr = np.full(v.shape, mu)
     items: list[Sequence[float]]
     if w is None:
@@ -243,18 +353,41 @@ def _prox_huber_identity(
     r"""Proximal operator for the Huber loss with identity link.
 
     Solves, elementwise,
-        argmin_x  w * L_delta(y - x) + (mu/2) * (x - v)^2
-    where ``L_delta(r) = 0.5 r^2`` for ``|r| <= delta`` and
-    ``L_delta(r) = delta * (|r| - 0.5*delta)`` for ``|r| > delta`` is the
-    Huber loss with knee ``delta > 0``. The minimum has a closed form:
-    a clipped weighted-mean shrinkage, with the linear-region branches
-    saturating at ``v +/- w*delta/mu``.
-        x* = v + w*delta/mu                 if y - v >   delta*(mu+w)/mu
-        x* = v - w*delta/mu                 if y - v <  -delta*(mu+w)/mu
-        x* = (w*y + mu*v) / (w + mu)        otherwise.
-    Reduces to the normal-identity prox in the inner (quadratic) region
-    and to a soft-threshold-style clip in the outer (linear) region;
-    bounded influence is what makes Huber robust to outliers.
+
+    .. math::
+
+       \arg\min_x\, w L_\delta(y - x) +
+       \tfrac{1}{2} \mu (x - v)^2,
+
+    where :math:`L_\delta` is the Huber loss with knee
+    :math:`\delta > 0`,
+
+    .. math::
+
+       L_\delta(r) = \begin{cases}
+       \tfrac{1}{2} r^2 & |r| \le \delta, \\
+       \delta\,(|r| - \tfrac{1}{2} \delta) & |r| > \delta.
+       \end{cases}
+
+    The minimum has a closed form: a clipped weighted-mean
+    shrinkage, with the linear-region branches saturating at
+    :math:`v \pm w \delta / \mu`,
+
+    .. math::
+
+       x^\ast = \begin{cases}
+       v + w \delta / \mu
+         & y - v >  \delta (\mu + w) / \mu, \\
+       v - w \delta / \mu
+         & y - v < -\delta (\mu + w) / \mu, \\
+       (w y + \mu v) / (w + \mu)
+         & \text{otherwise.}
+       \end{cases}
+
+    This reduces to :func:`_prox_normal_identity` in the inner
+    (quadratic) region and to a soft-threshold-style clip in the
+    outer (linear) region; bounded influence is what makes Huber
+    robust to outliers.
     """
     if w is None:
         threshold: FloatArray | float = delta * (1.0 + mu) / mu
@@ -282,13 +415,26 @@ def _prox_quantile_identity(
     r"""Proximal operator for the pinball / check loss with identity link.
 
     Solves, elementwise,
-        argmin_x  w * rho_tau(y - x) + (mu/2) * (x - v)^2
-    where ``rho_tau(r) = max(tau * r, (tau - 1) * r)`` is the pinball loss
-    parameterized by quantile level ``tau in (0, 1)``. The minimum is
-    attained in closed form via a shifted soft-threshold:
-        x* = v + w*tau/mu          if y > v + w*tau/mu        (overshoot)
-        x* = v - w*(1-tau)/mu      if y < v - w*(1-tau)/mu    (undershoot)
-        x* = y                     otherwise.
+
+    .. math::
+
+       \arg\min_x\, w \rho_\tau(y - x) +
+       \tfrac{1}{2} \mu (x - v)^2,
+
+    where :math:`\rho_\tau(r) = \max(\tau r, (\tau - 1) r)` is the
+    pinball loss parameterized by quantile level
+    :math:`\tau \in (0, 1)`. The minimum is attained in closed form
+    via a shifted soft-threshold,
+
+    .. math::
+
+       x^\ast = \begin{cases}
+       v + w \tau / \mu          & y > v + w \tau / \mu,
+       \quad \text{(overshoot)} \\
+       v - w (1 - \tau) / \mu    & y < v - w (1 - \tau) / \mu,
+       \quad \text{(undershoot)} \\
+       y                          & \text{otherwise.}
+       \end{cases}
     """
     if w is None:
         upper = v + tau / mu

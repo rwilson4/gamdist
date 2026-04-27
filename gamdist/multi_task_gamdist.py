@@ -25,22 +25,24 @@ shared feature set with optional convex coupling regularization.
 
 Per the design discussion on issue #39 (and CLAUDE.md's seam principle):
 
-  - Per-task primal step is unchanged: each task's task-local features
-    run their existing `optimize(fpumz_k, rho)` independently. A
-    multi-task feature wraps K of those into a single
-    `optimize_multi(fpumz_list, rho)` call, which is the only place the
-    cross-task coupling penalty enters.
-  - Per-task proximal step is unchanged: K independent prox calls,
-    each with its own `(family_k, link_k, y_k)` -- so tasks can use
-    different family/link pairs.
-  - `MultiTaskGAM` is a separate class whose state (`f_bar`,
-    `z_bar`, `u`, residual histories, offset, ...) is a length-K list.
-    Single-task `GAM` is unchanged.
+* Per-task primal step is unchanged: each task's task-local features
+  run their existing ``optimize(fpumz_k, rho)`` independently. A
+  multi-task feature wraps ``K`` of those into a single
+  ``optimize_multi(fpumz_list, rho)`` call, which is the only place
+  the cross-task coupling penalty enters.
+* Per-task proximal step is unchanged: ``K`` independent prox calls,
+  each with its own ``(family_k, link_k, y_k)`` -- so tasks can use
+  different family/link pairs.
+* :class:`MultiTaskGAM` is a separate class whose state (``f_bar``,
+  ``z_bar``, ``u``, residual histories, offset, ...) is a length-``K``
+  list. Single-task :class:`~gamdist.gamdist.GAM` is unchanged.
 
 The first concrete coupling penalty is group-lasso-across-tasks on
-linear features (see `_MultiTaskLinearFeature`); persistence,
-`summary()`, plotting, model-selection statistics, and per-task
-`tasks=` routing are out of scope for this slice.
+linear features (see
+:class:`~gamdist.multi_task_features._MultiTaskLinearFeature`).
+Persistence, :meth:`MultiTaskGAM.summary`, plotting, model-selection
+statistics, and per-task ``tasks=`` routing are out of scope for this
+slice.
 """
 
 from __future__ import annotations

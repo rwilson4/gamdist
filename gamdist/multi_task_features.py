@@ -22,19 +22,26 @@
 
 """Feature classes that span multiple tasks in a ``MultiTaskGAM``.
 
-A ``_MultiTaskFeature`` owns one set of coefficients shared across the
-K tasks and, optionally, a convex *coupling* regularizer that ties those
-K coefficients together. Coupling lives entirely inside the feature --
-the multi-task orchestrator never sees a penalty coefficient -- so the
-seam principle from CLAUDE.md is preserved.
+A :class:`_MultiTaskFeature` owns one set of coefficients shared across
+the ``K`` tasks and, optionally, a convex *coupling* regularizer that
+ties those ``K`` coefficient vectors together. Coupling lives entirely
+inside the feature -- the multi-task orchestrator never sees a penalty
+coefficient -- so the seam principle from CLAUDE.md is preserved.
 
-The first concrete subclass is ``_MultiTaskLinearFeature``: a linear
-contribution ``m_k * (x_k - mean(x_k))`` for each task ``k``. The only
-coupling penalty implemented in this slice is **group-lasso across
-tasks**: ``lambda * sqrt(sum_k m_k^2 * xtx_k)``, the K-task
-generalization of the existing single-task linear group-lasso. With
-``lambda = 0`` the K subproblems decouple and the feature behaves like K
-independent ``_LinearFeature`` instances stitched together.
+The first concrete subclass is :class:`_MultiTaskLinearFeature`: a
+linear contribution :math:`m_k (x_k - \\bar{x}_k)` for each task
+:math:`k`. The only coupling penalty implemented in this slice is
+*group-lasso across tasks*,
+
+.. math::
+
+   \\lambda \\sqrt{\\sum_k m_k^2\\, x_k^\\top x_k},
+
+the ``K``-task generalization of the existing single-task linear
+group-lasso. With :math:`\\lambda = 0` the ``K`` subproblems decouple
+and the feature behaves like ``K`` independent
+:class:`~gamdist.linear_feature._LinearFeature` instances stitched
+together.
 """
 
 from __future__ import annotations
@@ -158,28 +165,43 @@ class _MultiTaskFeature(_Feature):
 
 
 class _MultiTaskLinearFeature(_MultiTaskFeature):
-    """Linear feature shared across K tasks.
+    r"""Linear feature shared across K tasks.
 
-    Each task ``k`` gets its own slope ``m_k`` and its own (centered)
-    data column ``x_k = X_k[:, name] - mean(X_k[:, name])``; the
-    contribution to task ``k``'s linear predictor is ``m_k * x_k``.
+    Each task :math:`k` gets its own slope :math:`m_k` and its own
+    (centered) data column
+    :math:`x_k = X_k[:, \mathrm{name}] - \overline{X_k[:, \mathrm{name}]}`;
+    the contribution to task :math:`k`'s linear predictor is
+    :math:`m_k x_k`.
 
-    Without a coupling regularizer the K subproblems decouple and the
-    primal step reduces to K independent 1-D least-squares solves
-    (matching ``_LinearFeature`` exactly task-by-task).
+    Without a coupling regularizer the ``K`` subproblems decouple and
+    the primal step reduces to ``K`` independent 1-D least-squares
+    solves (matching :class:`~gamdist.linear_feature._LinearFeature`
+    exactly task-by-task).
 
     Coupling penalties available in this slice:
 
-    ``group_lasso_across_tasks``: ``regularization={"group_lasso_across_tasks":
-    {"coef": λ}}`` adds ``λ * sqrt(sum_k m_k^2 * xtx_k) = λ * ‖[m_1 √xtx_1,
-    ..., m_K √xtx_K]‖_2`` to the joint objective. This is the K-task
-    generalization of the single-task linear group-lasso ``λ * |m| *
-    sqrt(xtx)``: when λ is large enough, the entire K-vector of slopes
-    snaps to zero simultaneously, dropping the feature uniformly across
-    all tasks. Convex (an L2 norm of a linear function of m); composes
-    additively with the per-task quadratic in ``optimize_multi``. With
-    ``λ = 0`` the prox decouples and the feature recovers per-task
-    ordinary-least-squares behavior.
+    ``group_lasso_across_tasks``
+        ``regularization={"group_lasso_across_tasks": {"coef": lam}}``
+        adds
+
+        .. math::
+
+           \lambda \sqrt{\sum_k m_k^2\, x_k^\top x_k}
+           = \lambda\, \bigl\|
+           [m_1 \sqrt{x_1^\top x_1}, \ldots,
+            m_K \sqrt{x_K^\top x_K}]
+           \bigr\|_2
+
+        to the joint objective. This is the ``K``-task generalization
+        of the single-task linear group-lasso
+        :math:`\lambda |m| \sqrt{x^\top x}`: when :math:`\lambda` is
+        large enough the entire ``K``-vector of slopes snaps to zero
+        simultaneously, dropping the feature uniformly across all
+        tasks. Convex (an :math:`L_2` norm of a linear function of
+        :math:`m`); composes additively with the per-task quadratic
+        in :meth:`optimize_multi`. With :math:`\lambda = 0` the prox
+        decouples and the feature recovers per-task
+        ordinary-least-squares behavior.
     """
 
     def __init__(
