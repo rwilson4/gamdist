@@ -123,6 +123,65 @@ to get the smooth-shrinkage variant: a quadratic penalty
 `L`) that pulls neighboring coefficients *toward* each other instead
 of clustering them to identical values.
 
+### Multi-task: one feature set, multiple outcomes
+
+`MultiTaskGAM` fits K outcomes jointly under a shared feature set, with
+each task picking its own family and link and an optional **coupling
+regularizer** that ties the K coefficients of each feature together.
+The headline use case: identify a feature set that's simultaneously
+predictive of every outcome — not a feature set that's brilliant on
+some outcomes and useless on others.
+
+```python
+import numpy as np
+import pandas as pd
+from gamdist import MultiTaskGAM
+
+rng = np.random.default_rng(1)
+n = 400
+signal = rng.normal(size=n)
+noise = rng.normal(size=n)
+X = pd.DataFrame({"signal": signal, "noise": noise})
+
+y_continuous = 1.5 * signal + 0.1 * rng.normal(size=n)
+y_binary = (
+    rng.uniform(size=n) < 1.0 / (1.0 + np.exp(-0.8 * signal))
+).astype(float)
+
+mdl = MultiTaskGAM(families=["normal", "binomial"])
+mdl.add_feature(
+    "signal",
+    type="linear",
+    regularization={"group_lasso_across_tasks": {"coef": 0.5}},
+)
+mdl.add_feature(
+    "noise",
+    type="linear",
+    regularization={"group_lasso_across_tasks": {"coef": 0.5}},
+)
+mdl.fit([X, X], [y_continuous, y_binary])
+
+yhats = mdl.predict([X, X])
+# yhats[0] is the continuous task's mean; yhats[1] is task 2's
+# probability in (0, 1). With this λ the `noise` feature has been
+# dropped from BOTH tasks simultaneously — group-lasso across tasks
+# zeros the entire K-vector of slopes at once, not each task's slope
+# independently. That's the multi-task variable-selection story you
+# can't get from running K independent GAMs.
+```
+
+Tasks may have different `(family, link)` pairs, different observation
+counts, even different feature data per task — they only have to agree
+on the *names* of the features they share. The per-task ADMM splits
+stay independent except for the cross-task penalty inside each shared
+feature, so the seam principle (CLAUDE.md) carries over without
+changes to the orchestrator.
+
+Other coupling penalties (trace / nuclear norm, network-on-tasks,
+hierarchical pooling) and other convex ways to combine the per-task
+losses (weighted sum, log-sum-exp, minimax / CVaR) are tracked as
+follow-ups in [issue #39][issue39] and [issue #71][issue71].
+
 ## Development
 
 ```bash
@@ -171,3 +230,5 @@ Every per-component subproblem must be convex.
 [gamadmm]: https://stanford.edu/~boyd/papers/admm/gam.html
 [uv]: https://github.com/astral-sh/uv
 [issue19]: https://github.com/rwilson4/gamdist/issues/19
+[issue39]: https://github.com/rwilson4/gamdist/issues/39
+[issue71]: https://github.com/rwilson4/gamdist/issues/71
