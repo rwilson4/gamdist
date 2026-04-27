@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from .feature import _Feature
 from .gamdist import GAM, fit_adaptive_lasso
+from .multi_task_gamdist import MultiTaskGAM
 from .spline_feature import SplineError
 
-__all__ = ["GAM", "SplineError", "_Feature", "fit_adaptive_lasso"]
+__all__ = [
+    "GAM",
+    "MultiTaskGAM",
+    "SplineError",
+    "_Feature",
+    "fit_adaptive_lasso",
+]
 __version__ = "0.2.0"
