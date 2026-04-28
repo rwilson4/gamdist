@@ -20,6 +20,17 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
+"""Categorical feature: one parameter per level with a zero-sum constraint.
+
+:class:`_CategoricalFeature` contributes a per-level offset to the
+linear predictor. The per-feature primal step is solved as a small
+QP / SOCP via cvxpy; available regularizers are L1, L2, group lasso,
+the L_inf group lasso variant, network lasso, network ridge, and
+Huber. Convex shape constraints (sign / lower / upper / monotonic /
+convex / concave on a user-supplied category ordering) compose with
+those regularizers inside the same cvxpy program.
+"""
+
 from __future__ import annotations
 
 import pickle
@@ -47,43 +58,53 @@ class _CategoricalFeature(_Feature):
         constraints: dict[str, Any] | None = None,
         load_from_file: str | None = None,
     ) -> None:
-        """Initialize feature model (independent of data).
+        r"""Initialize feature model (independent of data).
 
         Parameters
         ----------
         name : str
-            Name for feature, used to make plots.
-        regularization : dict
-            Description of regularization terms (``l1``, ``l2``,
-            ``huber``, ``group_lasso``, ``group_lasso_inf``,
-            ``network_lasso``, ``network_ridge``). The
-            ``group_lasso_inf`` variant penalizes ``λ · ‖A q‖_∞ =
-            λ · max_{c with obs} |q_c|``, which clips the largest
-            per-level effect rather than the uniform L2 contraction
-            induced by ``group_lasso``. ``huber`` takes ``{"coef":
-            λ, "delta": δ}`` (with ``coef`` either a scalar or a
-            per-category dict, like ``l2``) and adds
-            ``λ_c · h_δ(q_c)`` per category, where ``h_δ`` is the
-            standard Huber function — ridge for ``|q_c| ≤ δ``,
-            linear with slope ``λ_c · δ`` outside. See the package
-            README for details.
-        constraints : dict
+            Name for the feature, used to make plots.
+        regularization : dict, optional
+            Description of regularization terms. Supported keys:
+            ``l1``, ``l2``, ``huber``, ``group_lasso``,
+            ``group_lasso_inf``, ``network_lasso``, ``network_ridge``.
+
+            The ``group_lasso_inf`` variant penalizes
+
+            .. math::
+
+               \lambda \|A q\|_\infty =
+               \lambda \max_{c \text{ with obs}} |q_c|,
+
+            which clips the largest per-level effect rather than
+            applying the uniform :math:`L_2` contraction induced by
+            ``group_lasso``.
+
+            ``huber`` takes ``{"coef": lam, "delta": d}`` (with
+            ``coef`` either a scalar or a per-category dict, like
+            ``l2``) and adds :math:`\lambda_c h_\delta(q_c)` per
+            category, where :math:`h_\delta` is the standard Huber
+            function -- ridge for :math:`|q_c| \le \delta`, linear
+            with slope :math:`\lambda_c \delta` outside. See the
+            package README for details.
+        constraints : dict, optional
             Optional convex shape constraints on the per-category
-            coefficient vector ``q``. ``lower`` / ``upper`` take floats
-            and bound every ``q_c``. ``sign`` (``"nonnegative"`` or
-            ``"nonpositive"``) is shorthand for one-sided ``lower=0`` /
-            ``upper=0`` and may not combine with ``lower`` / ``upper``.
-            ``monotonic`` (``"increasing"`` or ``"decreasing"``),
-            ``convex``, and ``concave`` impose ordering / second-
-            difference constraints along a user-supplied ``order``
-            (a list of category labels). The category zero-sum
-            constraint is preserved, so ``sign`` constraints will
-            collapse the entire vector to zero -- they exist for the
-            occasional regulated use case where that is the desired
-            "no negative effects" outcome and for symmetry with
-            linear features. All constraints append to the existing
-            cvxpy program in ``optimize``.
-        load_from_file : str
+            coefficient vector :math:`q`. ``lower`` / ``upper`` take
+            floats and bound every :math:`q_c`. ``sign``
+            (``"nonnegative"`` or ``"nonpositive"``) is shorthand for
+            one-sided ``lower=0`` / ``upper=0`` and may not combine
+            with ``lower`` / ``upper``. ``monotonic``
+            (``"increasing"`` or ``"decreasing"``), ``convex``, and
+            ``concave`` impose ordering / second-difference
+            constraints along a user-supplied ``order`` (a list of
+            category labels). The category zero-sum constraint is
+            preserved, so ``sign`` constraints will collapse the
+            entire vector to zero -- they exist for the occasional
+            regulated use case where that is the desired "no
+            negative effects" outcome and for symmetry with linear
+            features. All constraints append to the existing cvxpy
+            program in :meth:`optimize`.
+        load_from_file : str, optional
             Pickle path used to restore parameters. If specified,
             other parameters are ignored.
         """
@@ -336,7 +357,32 @@ class _CategoricalFeature(_Feature):
         covariate_class_sizes: npt.NDArray[Any] | None = None,
         na_signifier: Any = None,
     ) -> None:
-        """Compute feature-specific state from data."""
+        """Compute feature-specific state from training data.
+
+        Builds the per-category index, the indicator-style ``A``
+        matrix structure, the diagonal ``A^T A`` matrix, and the
+        scaled regularization vectors. Calling :meth:`initialize`
+        twice (e.g. for the adaptive-lasso refit) is idempotent.
+
+        Parameters
+        ----------
+        x : ndarray
+            Observations corresponding to this feature.
+        smoothing : float
+            Multiplicative scale applied to every regularization
+            coefficient.
+        save_flag : bool
+            If ``True``, save state to disk after initialization.
+        save_prefix : str, optional
+            Prefix used to derive the save filename.
+        verbose : bool
+            Print mildly helpful information when ``True``.
+        covariate_class_sizes : ndarray, optional
+            Per-observation covariate class sizes.
+        na_signifier : object, optional
+            Category value treated as missing; predictions for that
+            level are pinned to zero.
+        """
         self._num_obs = len(x)
         self._verbose = verbose
 
@@ -655,19 +701,19 @@ class _CategoricalFeature(_Feature):
         self._save_self = mv["save_self"]
 
     def optimize(self, fpumz: FloatArray, rho: float) -> FloatArray:
-        """Solve the per-feature primal step via cvxpy.
+        r"""Solve the per-feature primal step via cvxpy.
 
         Parameters
         ----------
-        fpumz : (m,) ndarray
-            Vector representing :math:`\\bar{f}^k + u^k - \\bar{z}^k`.
+        fpumz : ndarray of shape ``(m,)``
+            Vector representing :math:`\bar{f}^k + u^k - \bar{z}^k`.
         rho : float
             ADMM parameter. Must be positive.
 
         Returns
         -------
-        fkp1 : (m,) ndarray
-            Vector representing this feature's contribution to the response.
+        fkp1 : ndarray of shape ``(m,)``
+            This feature's contribution to the response.
         """
         b = fpumz - self._compute_Az(self.p)
         Atb = self._compute_Atz(b)

@@ -20,6 +20,26 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
+"""Single-response GAM and the ADMM orchestration loop.
+
+This module contains :class:`GAM` -- the user-facing model -- together
+with the family / link tables and the ADMM driver that ties per-feature
+primal steps to the per-outcome proximal step.
+
+The public entry points are:
+
+* :class:`GAM` -- configure with a family and link, register features
+  with :meth:`GAM.add_feature`, fit with :meth:`GAM.fit`, then call
+  :meth:`GAM.predict`, :meth:`GAM.deviance`, :meth:`GAM.aic`,
+  :meth:`GAM.summary`, etc.
+* :func:`fit_adaptive_lasso` -- two-stage adaptive-lasso wrapper that
+  refits with reweighted L1 penalties.
+
+The algorithm follows Chu, Keshavarz, & Boyd's distributed-fitting
+paper (citation key ``GAMADMM`` in :class:`GAM`'s docstring); the
+convexity-only design rule is captured in CLAUDE.md.
+"""
+
 from __future__ import annotations
 
 import os
@@ -144,33 +164,27 @@ def _plot_convergence(
     dual_tol: list[float],
     dev: list[float],
 ) -> None:
-    """Plot convergence progress.
+    """Plot ADMM convergence progress.
 
-    We deem the algorithm to have converged when the prime and dual
-    residuals are smaller than tolerances which are themselves computed
-    based on the data as in [ADMM]. Some analysts prefer to claim
-    convergence when changes to the deviance (a measure of goodness of
-    fit). Thus we plot that as well. Specifically, we plot, on a log
-    scale, dev - dev_final, where dev_final is the deviance of the final
-    model. We add 1e-10 just to avoid taking the logarithm of zero, which
-    is completely arbitrary but makes the plot look acceptable.
+    Convergence is declared when the primal and dual residuals fall
+    below tolerances computed from the data as in [ADMM]_. Some
+    analysts prefer to declare convergence based on changes to the
+    deviance, so this is also plotted -- specifically
+    :math:`\\log(\\mathrm{dev} - \\mathrm{dev}_\\mathrm{final})`,
+    with a small constant added to avoid :math:`\\log 0`.
 
     Parameters
     ----------
-     prim_res : array
-         Array of prime residuals after each iteration.
-     prim_tol : array
-         Array of prime tolerances after each iteration.
-     dual_res : array
-         Array of dual residuals after each iteration.
-     dual_tol : array
-         Array of dual tolerances after each iteration.
-     dev : array
-         Array of deviances after each iteration
-
-    Returns
-    -------
-     (nothing)
+    prim_res : array-like
+        Primal residuals after each iteration.
+    prim_tol : array-like
+        Primal tolerances after each iteration.
+    dual_res : array-like
+        Dual residuals after each iteration.
+    dual_tol : array-like
+        Dual tolerances after each iteration.
+    dev : array-like
+        Deviances after each iteration.
     """
     import matplotlib.pyplot as plt
 
@@ -252,6 +266,120 @@ def _gamma_dispersion(dof: float, dev: float, num_obs: int) -> float:
 
 
 class GAM:
+    """Generalized Additive Model fit via ADMM.
+
+    Configure with a family and link, register features with
+    :meth:`add_feature`, fit with :meth:`fit`, then call
+    :meth:`predict`, :meth:`deviance`, :meth:`aic`, :meth:`summary`,
+    etc.
+
+    Parameters
+    ----------
+    family : str, optional
+        Family of the model. One of:
+
+        * ``"normal"`` -- continuous responses.
+        * ``"binomial"`` -- binary responses (or counts with
+          ``covariate_class_sizes`` at fit time).
+        * ``"poisson"`` -- counts.
+        * ``"gamma"`` -- positive continuous responses (in progress).
+        * ``"exponential"`` -- gamma with dispersion fixed at 1.
+        * ``"inverse_gaussian"`` -- positive continuous responses
+          with cubic mean--variance relationship (in progress).
+        * ``"quasi_binomial"`` -- binomial score; dispersion estimated
+          from the data via Pearson :math:`\\chi^2 / (n - p)` so
+          :meth:`dispersion` reflects over- or under-dispersion
+          relative to the exact-binomial baseline of 1.
+        * ``"quasi_poisson"`` -- Poisson score; same Pearson
+          dispersion estimator, useful when count data has
+          ``variance > mean``.
+        * ``"quantile"`` -- pinball loss; requires ``tau``.
+        * ``"huber"`` -- robust M-estimator; requires ``delta``.
+
+        Multinomial (ordinal / nominal) and proportional-hazards
+        families are not yet supported. Required unless loading an
+        existing model from file (see ``load_from_file``). Point
+        estimates for ``"quasi_binomial"`` / ``"quasi_poisson"``
+        coincide with their full-likelihood cousins; only the
+        dispersion estimator (and any inferential quantity that
+        depends on it) differs.
+    link : str, optional
+        Link function. Supported links and their canonical families:
+
+        ====================  ====================
+        Link                  Canonical for family
+        ====================  ====================
+        ``identity``          ``normal``
+        ``logistic``          ``binomial``
+        ``log``               ``poisson``
+        ``reciprocal``        ``gamma``
+        ``reciprocal_squared``  ``inverse_gaussian``
+        ====================  ====================
+
+        ``probit`` and ``complementary_log_log`` are also accepted
+        (non-canonical for ``binomial``). If not specified, the
+        canonical link is used. Per the convexity-only design rule
+        (CLAUDE.md), only ``(family, link)`` pairs with a dedicated
+        convex proximal-operator implementation are accepted.
+    dispersion : float, optional
+        Dispersion parameter. Some families (``binomial``, ``poisson``)
+        have a fixed dispersion independent of the data. For other
+        families the dispersion is typically estimated from the data;
+        passing a known value here reduces uncertainty in the model.
+    estimate_overdispersion : bool, optional
+        Whether to estimate over-dispersion for binomial and poisson
+        families. Only meaningful when covariate classes are present
+        and have at least modest size. See [GLM]_, S4.5. Defaults to
+        ``False``.
+    name : str, optional
+        Name for the model. Used in plots and in deriving filenames
+        when ``save_flag=True`` is passed to :meth:`fit`.
+    load_from_file : str, optional
+        Pickle path produced by a previous ``save_flag=True`` fit.
+        When set, every other parameter is ignored.
+    tau : float, optional
+        Quantile level in :math:`(0, 1)` for ``family="quantile"``
+        (pinball loss). ``tau=0.5`` recovers the conditional median.
+        Required when ``family="quantile"`` and ignored otherwise.
+    delta : float, optional
+        Knee parameter for ``family="huber"``. Residuals with
+        :math:`|y - \\mu| \\le \\delta` are penalized as
+        :math:`0.5 r^2` (least squares); larger residuals are
+        penalized linearly, capping their per-observation influence.
+        Must be positive and is in the units of ``y``. Required when
+        ``family="huber"`` and ignored otherwise.
+
+    References
+    ----------
+    .. [glmnet] glmnet (R package). The standard package for GAMs in R.
+       https://cran.r-project.org/web/packages/glmnet/index.html
+
+    .. [pygam] pygam (Python package). Implements GAMs in Python without
+       using ADMM. https://github.com/dswah/pyGAM
+
+    .. [GLM] McCullagh, P. and Nelder, J. A. *Generalized Linear
+       Models*. The standard text on GLMs.
+
+    .. [GAM] Hastie, T. and Tibshirani, R. *Generalized Additive
+       Models*. The book by the folks who invented GAMs.
+
+    .. [ESL] Hastie, T., Tibshirani, R., and Friedman, J.
+       *The Elements of Statistical Learning*. Covers a lot more than
+       just GAMs.
+
+    .. [GAMr] Wood, S. N. *Generalized Additive Models: An
+       Introduction with R*. Covers more implementation details than
+       [GAM]_.
+
+    .. [ADMM] Boyd, S., Parikh, N., Chu, E., Peleato, B., and
+       Eckstein, J. *Distributed Optimization and Statistical
+       Learning via the Alternating Direction Method of Multipliers*.
+
+    .. [GAMADMM] Chu, E., Keshavarz, A., and Boyd, S. *A Distributed
+       Algorithm for Fitting Generalized Additive Models*. Forms the
+       basis of this package's approach.
+    """
+
     def __init__(
         self,
         family: Family | None = None,
@@ -263,117 +391,6 @@ class GAM:
         tau: float | None = None,
         delta: float | None = None,
     ) -> None:
-        """Generalized Additive Model
-
-        This is the constructor for a Generalized Additive Model.
-
-        References
-        ----------
-         [glmnet]   glmnet (R package):
-                    https://cran.r-project.org/web/packages/glmnet/index.html
-                    This is the standard package for GAMs in R and was written by people
-                    much smarter than I am!
-         [pygam]    pygam (Python package): https://github.com/dswah/pyGAM
-                    This is a library in Python that does basically the same thing as this
-                    script, but in a different way (not using ADMM).
-         [GLM]      Generalized Linear Models by McCullagh and Nelder
-                    The standard text on GLMs.
-         [GAM]      Generalized Additive Models; by Hastie and Tibshirani
-                    The book by the folks who invented GAMs.
-         [ESL]      The Elements of Statistical Learning; by Hastie, Tibshirani, and
-                    Friedman. Covers a lot more than just GAMs.
-         [GAMr]     Generalized Additive Models: an Introduction with R; by Wood.
-                    Covers more implementation details than [GAM].
-         [ADMM]     Distributed Optimization and Statistical Learning via the Alternating
-                    Direction Method of Multipliers; by Boyd, Parikh, Chu, Peleato, and
-                    Eckstein. A mouthful, a work of genius.
-         [GAMADMM]  A Distributed Algorithm for Fitting Generalized Additive Models;
-                    by Chu, Keshavarz, and Boyd
-                    Forms the basis of our approach, the inspiration for this package!
-
-        Parameters
-        ----------
-         family : str or None (default None)
-             Family of the model. Currently supported families include:
-                'normal' (for continuous responses),
-                'binomial' (for binary responses),
-                'poisson' (for counts),
-                'gamma' (still in progress),
-                'inverse_gaussian' (still in progress),
-                'quasi_binomial' (binomial score; dispersion estimated
-                  from the data via Pearson chi-squared / (n - p) so
-                  ``dispersion()`` reflects over- or under-dispersion
-                  relative to the exact-binomial baseline of 1),
-                'quasi_poisson' (Poisson score; same Pearson
-                  dispersion estimator, useful when count data has
-                  variance > mean),
-                'quantile' (pinball loss; requires ``tau``),
-                'huber' (robust M-estimator; requires ``delta``).
-             Not currently supported families that could be supported
-             include Multinomial models (ordinal and nominal) and
-             proportional hazards models. Required unless loading an
-             existing model from file (see load_from_file). Point
-             estimates for ``quasi_binomial`` / ``quasi_poisson``
-             coincide with their full-likelihood cousins; only the
-             dispersion estimator (and any inferential quantity that
-             depends on it) differs.
-         link : str or None (optional)
-             Link function associated with the model. Supported link
-             functions include:
-                     Link                Canonical For Family
-                'identity'                  'normal'
-                'logistic'                  'binomial'
-                'log'                       'poisson'
-                'reciprocal'                'gamma'
-                'reciprocal_squared'        'inverse_gaussian'
-             Other links worth supporting include probit, log-log
-             and complementary log-log link functions. If not
-             specified, the canonical link will be used, but non-
-             canonical links are still permitted. Certain link/family
-             combinations result in a non-convex problem and
-             convergence is not guaranteed.
-         dispersion : float or None (optional)
-             Dispersion parameter associated with the model. Certain
-             families (binomial, poisson) have dispersion independent
-             of the data. Specifying the dispersion for these families
-             does nothing. In other instances, the dispersion is
-             typically unknown and must be estimated from the data.
-             If the dispersion is known, it can be specified here which
-             will reduce the uncertainty of the model.
-         estimate_overdispersion : boolean (optional)
-             Flag specifying whether to estimate over-dispersion for
-             Binomial and Poisson (not yet implemented) families. Is
-             only possible when covariate classes are present and have
-             at least modest size. See [GLM, S4.5] for
-             details. Defaults to False.
-         name : str or None (optional)
-             Name for model, to be used in plots and in saving files.
-         load_from_file : str or None (optional)
-             This module uses an iterative approach to fitting models.
-             For complicated models with lots of data, each iteration
-             can take a long time (though the number of iterations is
-             typically less than 100). If the user wishes to pause
-             after the end of an iteration, they can pick up where
-             the left off by saving results (see the save_flag in .fit)
-             and loading them to start the next iterations. Specifying
-             this option supercedes all other parameters.
-         tau : float or None (optional)
-             Quantile level in (0, 1) for ``family='quantile'`` (pinball
-             loss). ``tau=0.5`` recovers the conditional median.
-             Required when ``family='quantile'`` and ignored otherwise.
-         delta : float or None (optional)
-             Knee parameter for ``family='huber'``. Residuals with
-             ``|y - mu| <= delta`` are penalized as ``0.5 * r^2`` (least
-             squares); larger residuals are penalized linearly, capping
-             their per-observation influence. Must be positive and is in
-             the units of ``y``. Required when ``family='huber'`` and
-             ignored otherwise.
-
-        Returns
-        -------
-         mdl : Generalized Additive Model object
-
-        """
 
         if load_from_file is not None:
             self._load(load_from_file)
@@ -625,89 +642,82 @@ class GAM:
         regularization: dict[str, Any] | None = None,
         constraints: dict[str, Any] | None = None,
     ) -> None:
-        """Add a feature
+        """Add a feature to the model.
 
-        Add a feature to a Generalized Additive Model. (An implicit
-        constant feature is always included, representing the overall
-        average response.)
+        An implicit constant feature is always included, representing
+        the overall average response.
 
         Parameters
         ----------
-         name : str
-             Name for feature. Used internally to keep track of
-             features and is also used when saving files and in
-             plots.
-         type : str
-             Type of feature. Currently supported options include:
-               'categorical' (for categorical variables)
-               'linear' (for variables with a linear contribution
-                         to the response)
-               'spline' (for variables with a potentially nonlinear
-                         contribution to the response).
-             Other types of features worth supporting include
-             piecewise constant functions and monotonic functions.
-             Those might end up being regularization terms.
-         transform : function or None
-             Optional transform applied to feature data, saving
-             the user from repetitive boilerplate code. Any function
-             may be used; it is applied to data provided during fitting
-             and prediction. Common options might include np.log, np.log1p,
-             or np.sqrt. The user may wish to start with a base feature
-             like 'age' and use derived features 'age_linear', 'age_quadratic'
-             to permit quadratic models for that feature, with potentially
-             different regularization applied to each.
-         rel_dof : float or None
-             Relative degrees of freedom. Applicable only to spline features.
-             The degrees of freedom associated with a spline represent how
-             "wiggly" it is allowed to be. A spline with two degrees of freedom
-             is just a line. (Actually, since these features are constrained
-             to have zero mean response over the data, linear features
-             only have one degree of freedom.) The relative degrees of freedom
-             are used to specify the baseline smoothing parameter (lambda)
-             associated with a feature. When the model is fit to data, the user
-             can specify an overall smoothing parameter applied to all features
-             to alter the amount of regularization in the entire model. Thus
-             the actual degrees of freedom will vary based on the amount of
-             smoothing. The idea is that the analyst may wish to permit some
-             features to be more wiggly than others. By default, all
-             splines have 4 relative degrees of freedom.
+        name : str
+            Name for the feature. Used internally to keep track of
+            features and also used when saving files and in plots.
+        type : str
+            Type of feature. One of:
 
-             Regularization of any feature effectively reduces the degrees of
-             freedom, and so this term is potentially applicable, but that is
-             not yet supported.
-        regularization : dictionary or None
-             Dictionary specifying the regularization applied to this feature.
-             Different types of features support different types of regularization.
-             Splines always include a C2 smoothness penalty controlled via
-             ``rel_dof``; ``regularization={"group_lasso": {"coef": λ}}``
-             additionally shrinks the entire spline contribution and can
-             zero it out. ``group_lasso_inf`` is the L_∞-norm variant
-             (``λ · ‖f_j‖_∞``); it produces a clipping rather than a
-             uniform contraction and is also available on linear and
-             categorical features. ``huber`` is a bounded-influence
-             ridge analogue: ``regularization={"huber": {"coef": λ,
-             "delta": δ}}`` adds ``λ · h_δ(coef)`` per parameter, with
-             ``h_δ`` quadratic for small magnitudes and linear beyond
-             ``δ``. Available on linear and categorical features.
-             Other features have more diverse options described in
-             their own documentation.
-        constraints : dictionary or None
-             Optional convex shape constraints on the feature's
-             coefficients. ``sign`` (``"nonnegative"`` /
-             ``"nonpositive"``), ``lower`` and ``upper`` (floats) bound
-             coefficients. ``monotonic`` (``"increasing"`` /
-             ``"decreasing"``), ``convex`` and ``concave`` impose
-             ordering / second-difference constraints (categorical
-             features additionally require an ``order`` list of
-             category labels; splines order along the knots).
-             Linear features support only ``sign`` / ``lower`` /
-             ``upper``. See each feature class's docstring for
-             details.
+            * ``"categorical"`` -- for categorical variables.
+            * ``"linear"`` -- for variables with a linear contribution
+              to the response.
+            * ``"spline"`` -- for variables with a potentially
+              nonlinear contribution to the response.
+        transform : callable, optional
+            Optional transform applied to the feature data. Any
+            callable may be used; it is applied to data provided
+            during fitting and prediction. Common choices include
+            :func:`numpy.log`, :func:`numpy.log1p`, or
+            :func:`numpy.sqrt`. The user may wish to start with a base
+            feature ``"age"`` and use derived features ``"age_linear"``
+            and ``"age_quadratic"`` to permit quadratic models for
+            that feature, with potentially different regularization
+            applied to each.
+        rel_dof : float, optional
+            Relative degrees of freedom. Applicable only to spline
+            features. The degrees of freedom associated with a spline
+            represent how "wiggly" it is allowed to be: a spline with
+            two degrees of freedom is just a line. (Since features
+            are constrained to have zero mean response over the data,
+            linear features only have one degree of freedom.) The
+            relative degrees of freedom set the baseline smoothing
+            parameter :math:`\\lambda` associated with the feature.
+            When :meth:`fit` is called, the user may specify an
+            overall ``smoothing`` parameter applied to all features
+            to alter the amount of regularization in the entire model;
+            the actual degrees of freedom will vary based on the
+            amount of smoothing. By default, splines have 4 relative
+            degrees of freedom.
 
-        Returns
-        -------
-         (nothing)
-
+            Regularization of any feature effectively reduces the
+            degrees of freedom; that adjustment is not yet wired in.
+        regularization : dict, optional
+            Dictionary specifying the regularization applied to this
+            feature. Different types of features support different
+            types of regularization. Splines always include a
+            :math:`C^2` smoothness penalty controlled via ``rel_dof``;
+            ``regularization={"group_lasso": {"coef": lam}}``
+            additionally shrinks the entire spline contribution and
+            can zero it out. ``group_lasso_inf`` is the
+            :math:`L_\\infty`-norm variant
+            (:math:`\\lambda \\|f_j\\|_\\infty`); it produces a
+            clipping rather than a uniform contraction and is also
+            available on linear and categorical features. ``huber``
+            is a bounded-influence ridge analogue:
+            ``regularization={"huber": {"coef": lam, "delta": d}}``
+            adds :math:`\\lambda h_\\delta(\\mathrm{coef})` per
+            parameter, with :math:`h_\\delta` quadratic for small
+            magnitudes and linear beyond :math:`\\delta`. Available
+            on linear and categorical features. Other features have
+            more diverse options; see each feature class's docstring.
+        constraints : dict, optional
+            Optional convex shape constraints on the feature's
+            coefficients. ``sign`` (``"nonnegative"`` /
+            ``"nonpositive"``), ``lower``, and ``upper`` (floats)
+            bound coefficients. ``monotonic`` (``"increasing"`` /
+            ``"decreasing"``), ``convex``, and ``concave`` impose
+            ordering / second-difference constraints (categorical
+            features additionally require an ``order`` list of
+            category labels; splines order along the knots). Linear
+            features support only ``sign`` / ``lower`` / ``upper``.
+            See each feature class's docstring for details.
         """
         f: _Feature
         if type == "categorical":
@@ -749,94 +759,86 @@ class GAM:
         max_its: int = 100,
         n_jobs: int = 1,
     ) -> None:
-        """Fit a Generalized Additive Model to data.
-
-        Note regarding binomial families: many data sets include
-        multiple observations having identical features. For example,
-        imagine a data set with features 'gender', and 'country' and
-        binary response indicating whether the person died (morbid but
-        common in biostatistics). The data might look like this:
-
-           gender   country   patients   survivors
-             M        USA       50           48
-             F        USA       70           65
-             M        CAN       40           38
-             F        CAN       45           43
-
-        This still describes a binomial family, but in a more compact
-        format than specifying each individual user. We eventually
-        want to support this more compact format, but we do not
-        currently! In this context, it is important to check for
-        over-dispersion (see [GLM]), and I need to learn more first.
-        In the current implementation, we assume that there is no
-        over-dispersion, and that the number of users having the
-        same set of features is small.
+        """Fit the model to data.
 
         Parameters
         ----------
-         X : pandas dataframe
-             Dataframe of features. The column names must correspond
-             to the names of features added to the model. X may have
-             extra columns corresponding to features not included in
-             the model; these are simply ignored. Where applicable,
-             the data should be "pre-transformation", since this code
-             will apply any transformations specified in .add_feature.
-         y : array
-             Response. Depending on the model family, the response
-             may need to be in a particular form (for example, for
-             a binomial family, the y's should be either 0 or 1),
-             but this is not checked anywhere!
-         covariate_class_sizes : array or None.
-             If observations are grouped into covariance classes, the
-             size of those classes should be listed in this input.
-         w : array
-             Weights applied to each observation. This is effectively
-             specifying the dispersion of each observation.
-         optimizer : string
-             We use the Alternating Direction Method of Multipliers
-             ('admm') to fit the model. We may eventually support more
-             methods, but right now this option does nothing.
-         smoothing : float
-             Smoothing to apply to entire model, used in conjunction
-             with other regularization parameters. That is, whatever
-             regularization is used for the various features, is
-             scaled by this term, allowing the user to set the overall
-             smoothing by Cross Validation or whatever they like. This
-             allows the user to specify different regularization for
-             each feature, while still permitting a one-dimensional
-             family of models corresponding to different amounts of
-             regularization. Defaults to 1., leaving the regularization
-             as specified in .add_feature().
-         save_flag : boolean
-             Specifies whether to save intermediate results after each
-             iteration. Useful for complicated models with massive
-             data sets that take a while to fit. If the system crashes
-             during the fit, the analyst can pick up where they left
-             off instead of starting from scratch. Defaults to False.
-         verbose : boolean
-             Specifies whether to print mildly useful information to
-             the screen during the fit. Defaults to False.
-         plot_convergence : boolean
-             Specifies whether to plot the convergence graph at the
-             end. (I suspect only Convex Optimization nerds like me
-             want to see this.) Defaults to False.
-         max_its : integer
-             Maximum number of iterations. Defaults to 100.
-         n_jobs : integer
-             Number of threads to use for the per-feature primal step
-             within each ADMM iteration. Defaults to 1 (serial); pass
-             ``-1`` to use ``os.cpu_count()``. NumPy / SciPy / cvxpy
-             release the GIL during their numeric kernels, so threading
-             produces real speedup. Expect a 2-4x ceiling on models
-             with several non-trivial features (splines, categoricals
-             via cvxpy); pure linear-only models are usually faster
-             serial because the per-feature work is too cheap to
-             amortize the thread-dispatch overhead.
+        X : pandas.DataFrame
+            Dataframe of features. The column names must correspond
+            to the names of features added to the model. ``X`` may
+            have extra columns corresponding to features not included
+            in the model; these are silently ignored. Where
+            applicable, the data should be "pre-transformation": any
+            transformations specified in :meth:`add_feature` are
+            applied here.
+        y : array-like
+            Response. Depending on the model family, the response may
+            need to be in a particular form (for example, for a
+            binomial family, ``y`` should contain 0s and 1s); this is
+            not checked.
+        covariate_class_sizes : array-like, optional
+            If observations are grouped into covariate classes, the
+            size of those classes should be listed here.
+        weights : array-like, optional
+            Per-observation weights. Effectively specifies the
+            dispersion of each observation.
+        optimizer : str
+            Optimization method. Currently only ``"admm"`` is
+            supported, so this argument has no effect.
+        smoothing : float
+            Multiplicative scale applied to every feature's
+            regularization coefficient. Lets the user set the overall
+            smoothing by cross-validation while keeping the relative
+            regularization across features fixed. Defaults to ``1.0``,
+            which leaves the regularization as specified in
+            :meth:`add_feature`.
+        save_flag : bool
+            Whether to save intermediate results after each iteration.
+            Useful for complicated models with massive data sets that
+            take a while to fit; if the system crashes during the fit
+            the analyst can resume from the last checkpoint. Defaults
+            to ``False``.
+        verbose : bool
+            Print mildly useful information during the fit. Defaults
+            to ``False``.
+        plot_convergence : bool
+            Plot the convergence graph at the end of the fit. Defaults
+            to ``False``.
+        max_its : int
+            Maximum number of ADMM iterations. Defaults to 100.
+        n_jobs : int
+            Number of threads to use for the per-feature primal step
+            within each ADMM iteration. Defaults to 1 (serial); pass
+            ``-1`` to use :func:`os.cpu_count`. NumPy / SciPy / cvxpy
+            release the GIL during their numeric kernels, so
+            threading produces real speedup. Expect a 2-4x ceiling on
+            models with several non-trivial features (splines,
+            categoricals via cvxpy); pure linear-only models are
+            usually faster serial because the per-feature work is too
+            cheap to amortize thread-dispatch overhead.
 
-        Returns
-        -------
-         (nothing)
+        Notes
+        -----
+        Many binomial data sets include multiple observations with
+        identical features. For example, a data set with features
+        ``gender`` and ``country`` and a binary survival response
+        might be presented in the compact form
 
+        ============  =============  ==========  ===========
+        gender        country        patients    survivors
+        ============  =============  ==========  ===========
+        M             USA            50          48
+        F             USA            70          65
+        M             CAN            40          38
+        F             CAN            45          43
+        ============  =============  ==========  ===========
+
+        This is still a binomial family, just more compact. The
+        compact format is not yet supported; in this context it is
+        important to check for over-dispersion (see [GLM]_). The
+        current implementation assumes no over-dispersion and that
+        the number of observations sharing a feature pattern is
+        small.
         """
         if n_jobs == -1:
             n_jobs = os.cpu_count() or 1
@@ -1055,41 +1057,44 @@ class GAM:
                 f_new += fj_new[name]
 
     def _optimize(self, upf: FloatArray, N: int) -> FloatArray:
-        r"""Optimize \bar{z}.
+        r"""Optimize :math:`\bar{z}` (the ADMM dual step).
 
-        Solves the optimization problem:
-           minimize L(N*z) + \rho/2 * \| N*z - N*u - N*\bar{f} \|_2^2
-        where z is the variable, N is the number of features, u is the scaled
-        dual variable, \bar{f} is the average feature response, and L is
-        the likelihood function which is different depending on the
-        family and link function. This is accomplished via a proximal
-        operator, as discussed in [GAMADMM]:
-          prox_\mu(v) := argmin_x L(x) + \mu/2 * \| x - v \|_2^2
-        I strongly believe that paper contains a typo in this equation, so we
-        return (1. / N) * prox_\mu (N * (u + \bar{f}) with \mu = \rho instead
-        of \mu = \rho / N as in [GAMADMM]. When implemented as in the paper,
-        convergence was much slower, but it did still converge.
+        Solves the optimization problem
 
-        Certain combinations of family and link function result in proximal
-        operators with closed form solutions, making this step *very* fast
-        (e.g. 3 flops per observation).
+        .. math::
+
+           \min_z\; L(N z) + \frac{\rho}{2}\,
+           \| N z - N u - N \bar{f} \|_2^2
+
+        where :math:`z` is the variable, :math:`N` is the number of
+        features, :math:`u` is the scaled dual variable,
+        :math:`\bar{f}` is the average feature response, and
+        :math:`L` is the family-and-link-specific negative
+        log-likelihood. The minimizer is computed via a proximal
+        operator (see [GAMADMM]_):
+
+        .. math::
+
+           \mathrm{prox}_\mu(v) := \arg\min_x\, L(x) +
+           \frac{\mu}{2}\, \| x - v \|_2^2.
+
+        We compute :math:`(1 / N) \cdot \mathrm{prox}_\mu(N (u +
+        \bar{f}))` with :math:`\mu = \rho`, rather than the paper's
+        :math:`\mu = \rho / N`; convergence is much faster this way.
+        Several ``(family, link)`` pairs admit closed-form proximal
+        operators, making this step very fast.
 
         Parameters
         ----------
-         upf : array
-             Vector representing u + \bar{f}
-         N : integer
-             Number of features.
-         p : Multiprocessing Pool (optional)
-             If multiple threads are available, massive data sets may
-             benefit from solving this optimization problem in parallel.
-             It is up to the individual functions to decide whether to
-             actually do this.
+        upf : ndarray
+            Vector representing :math:`u + \bar{f}`.
+        N : int
+            Number of features.
 
         Returns
         -------
-         z : array
-             Result of the above optimization problem.
+        z : ndarray
+            Result of the above optimization.
         """
 
         # ``__init__`` already restricted (family, link) to the
@@ -1147,25 +1152,23 @@ class GAM:
         )
 
     def predict(self, X: pd.DataFrame) -> FloatArray:
-        """Apply fitted model to features.
+        """Apply the fitted model to features.
 
         Parameters
         ----------
-         X : pandas dataframe
-             Data for which we wish to predict the response. The
-             column names must correspond to the names of the
-             features used to fit the model. X may have extra
-             columns corresponding to features not in the model;
-             these are simply ignored. Where applicable, the data
-             should be "pre-transformation", since this code will
-             apply any transformations specified while defining
-             the model.
+        X : pandas.DataFrame
+            Data for which to predict the response. The column names
+            must correspond to the names of the features used to fit
+            the model. ``X`` may have extra columns corresponding to
+            features not in the model; these are silently ignored.
+            Where applicable, the data should be "pre-transformation":
+            transformations specified at model definition time are
+            applied here.
 
         Returns
         -------
-         mu : array
-             Predicted mean response for each data point.
-
+        mu : ndarray
+            Predicted mean response for each row of ``X``.
         """
         if not self._fitted:
             raise AttributeError("Model not yet fit.")
@@ -1410,60 +1413,50 @@ class GAM:
     ) -> FloatArray:
         """Confidence intervals on predictions.
 
-        NOT YET IMPLEMENTED
+        .. note::
 
-        There are two notions of confidence intervals that are
-        appropriate. The first is a confidence interval on mu,
-        the mean response. This follows from the uncertainty
-        associated with the fit model. The second is a confidence
-        interval on observations of this model. The distinction
-        is best understood by example. For a Gaussian family,
-        the model might be a perfect fit to the data, and we
-        may have billions of observations, so we know mu perfectly.
-        Confidence intervals on the mean response would be very
-        small. But the response is Gaussian with a non-zero
-        variance, so observations will in general still be spread
-        around the mean response. A confidence interval on the
-        prediction would be larger.
+           Not yet implemented; raises :class:`NotImplementedError`.
 
-        Now consider a binomial family. The estimated mean response
-        will be some number between 0 and 1, and we can estimate
-        a confidence interval for that mean. But the observed
-        response is always either 0 or 1, so it doesn't make sense
-        to talk about a confidence interval on the prediction
-        (except in some pedantic sense perhaps).
+        Two notions of confidence interval are useful here. The first
+        is a confidence interval on :math:`\\mu`, the mean response;
+        this captures the uncertainty in the fitted model. The second
+        is a confidence interval on observations of this model. For a
+        Gaussian family the model might be a perfect fit with billions
+        of observations -- so :math:`\\mu` is known precisely and the
+        mean-response interval is tiny -- but observations are still
+        spread around the mean, so the prediction interval is wider.
+        For a binomial family the estimated mean lies in
+        :math:`(0, 1)` and admits a confidence interval, but the
+        observed response is always 0 or 1 so a "prediction interval"
+        is only meaningful in a pedantic sense.
 
-        Note that if we are making multiple predictions, it makes
-        sense to talk about a "global" set of confidence intervals.
-        Such a set has the property that *all* predictions fall
-        within their intervals with specified probability. This
-        function does not compute global confidence intervals!
-        Instead each confidence interval is computed "in vacuo".
+        When making multiple predictions a "global" set of intervals
+        (all predictions inside their intervals with the specified
+        joint probability) is sometimes desirable. This function does
+        not compute global intervals; each interval is computed *in
+        vacuo*.
 
         Parameters
         ----------
-         X : pandas dataframe
-             Data for which we wish to predict the response. The
-             column names must correspond to the names of the
-             features used to fit the model. X may have extra
-             columns corresponding to features not in the model;
-             these are simply ignored. Where applicable, the data
-             should be "pre-transformation", since this code will
-             apply any transformations specified while defining
-             the model.
-         prediction : boolean
-             Specifies whether to return a confidence interval
-             on the mean response or on the predicted response.
-             (See above.) Defaults to False, leading to a
-             confidence interval on the mean response.
-         width : float between 0 and 1
-             Desired confidence width. Defaults to 0.95.
+        X : pandas.DataFrame
+            Data for which to predict the response. The column names
+            must correspond to the names of the features used to fit
+            the model. ``X`` may have extra columns corresponding to
+            features not in the model; these are silently ignored.
+            Where applicable, the data should be "pre-transformation".
+        prediction : bool
+            If ``True``, return a confidence interval on the predicted
+            response; if ``False``, on the mean response. Defaults to
+            ``False``.
+        width : float
+            Desired confidence width in :math:`(0, 1)`. Defaults to
+            ``0.95``.
 
         Returns
         -------
-         mu : (n x 2) array
-             Lower and upper bounds on the confidence interval
-             associated with each prediction.
+        bounds : ndarray of shape ``(n, 2)``
+            Lower and upper bounds on the confidence interval
+            associated with each prediction.
         """
         raise NotImplementedError("confidence_intervals is not yet implemented")
 
@@ -1472,20 +1465,17 @@ class GAM:
         name: str,
         true_fn: Callable[[FloatArray], FloatArray] | None = None,
     ) -> None:
-        """Plot the component of the modelf for a particular feature.
+        """Plot the model component for a particular feature.
 
         Parameters
         ----------
-         name : str
-             Name of feature (must be a feature in the model).
-         true_fn : function or None (optional)
-             Function representing the "true" relationship
-             between the feature and the response.
-
-        Returns
-        -------
-         (nothing)
-
+        name : str
+            Name of the feature; must be one of the features in the
+            model.
+        true_fn : callable, optional
+            Function representing the "true" relationship between the
+            feature and the response, overlaid on the plot for
+            comparison.
         """
         self._features[name]._plot(true_fn=true_fn)
 
@@ -1758,42 +1748,44 @@ class GAM:
         covariate_class_sizes: npt.NDArray[Any] | None = None,
         w: npt.NDArray[Any] | None = None,
     ) -> float:
-        r"""Deviance
+        r"""Deviance of the fitted model.
 
-        This function works in one of two ways:
+        With no arguments, returns the training deviance
 
-        Firstly, it computes the deviance of the model, defined as
-           2 * \phi * (\ell(y; y) - \ell(\mu; y))
-        where \phi is the dispersion (which is only in this equation
-        to cancel out the denominator of the log-likelihood),
-        \ell(y; y) is the log-likelihood of the model that fits the
-        data perfectly, and \ell(\mu; y) is the log-likelihood of the
-        fitted model on the data used to fit the model. This is
-        the quantity we minimize when fitting the model.
+        .. math::
 
-        Secondly, it computes the deviance of the model on arbitrary
-        data sets. This can be used in conjunction with Cross Validation
-        to choose the smoothing parameter by minimizing the deviance
-        on the hold-out set.
+           D = 2 \phi \bigl(\ell(y; y) - \ell(\mu; y)\bigr),
+
+        where :math:`\phi` is the dispersion (present only to cancel
+        the denominator of the log-likelihood),
+        :math:`\ell(y; y)` is the log-likelihood of a model that fits
+        the data perfectly, and :math:`\ell(\mu; y)` is the
+        log-likelihood of the fitted model on its training data. This
+        is the quantity ADMM minimizes during fitting.
+
+        With ``X`` and ``y`` supplied, returns the deviance on the
+        provided data set. Combined with cross-validation this is the
+        usual way to pick the ``smoothing`` parameter by minimizing
+        deviance on a hold-out set.
 
         Parameters
         ----------
-         X : pandas dataframe (optional)
-             Dataframe of features. The column names must correspond
-             to the names of features added to the model. (See .predict()).
-             Only applicable for the second use case described above.
-         y : array (optional)
-             Response. Only applicable for the second use case.
-         covariate_class_sizes : array (optional)
-             Array of covariate class sizes.
-         w : array (optional)
-             Weights for observations. Only applicable for the second
-             use case, but optional even then.
+        X : pandas.DataFrame, optional
+            Dataframe of features. The column names must correspond
+            to the names of features added to the model (see
+            :meth:`predict`). Only used in the hold-out branch.
+        y : array-like, optional
+            Response on the hold-out set. Only used in the hold-out
+            branch.
+        covariate_class_sizes : array-like, optional
+            Array of covariate class sizes for the hold-out data.
+        w : array-like, optional
+            Per-observation weights for the hold-out branch.
 
         Returns
         -------
-         D : float
-             The deviance of the model.
+        D : float
+            The deviance of the model.
         """
         if X is None or y is None:
             y = self._y
@@ -1888,37 +1880,29 @@ class GAM:
         raise ValueError(f"Unsupported family {self._family!r}")
 
     def dispersion(self, formula: str = "deviance") -> float:
-        """Dispersion
+        """Dispersion of the fitted model.
 
-        Returns the dispersion associated with the model. Depending on
-        the model family and whether the dispersion was specified by
-        the user, the dispersion may or may not be known a
-        priori. This function will estimate this parameter when
-        appropriate.
+        Returns the dispersion associated with the model. Some
+        families (binomial, poisson) have a fixed dispersion; for
+        others the dispersion is estimated from the data.
 
-        There are different ways of estimating this parameter that may
-        be appropriate for different kinds of families. The current
-        implementation is based on the deviance, as in Eqn 3.10 on
-        p. 110 of GAMr. As discussed in that section, this tends not
-        to work well for Poisson data (with overdispersion) when the
-        mean response is small. Alternatives are offered in that
-        section, but I have not yet implemented them. This is not
-        terribly relevant for the current implementation since
-        overdispersion is not supported! (When overdispersion is not
-        present, the dispersion of the Poisson is exactly 1.)
-
-        My eventual hope is to understand the appropriate methods for
-        all the different circumstances and have intelligent defaults
-        that can be overridden by opinionated users.
+        Different estimators may be appropriate for different
+        families. The current implementation is the deviance-based
+        estimator of [GAMr]_, Eqn. 3.10 on p. 110. That section notes
+        the estimator works poorly for overdispersed Poisson data
+        with a small mean response and offers alternatives that have
+        not yet been implemented. This is not currently a concern
+        because overdispersion is not supported -- and without
+        overdispersion the Poisson dispersion is exactly 1.
 
         Parameters
         ----------
-         formula : str
-             Formula for the dispersion. Options include:
-                'deviance' (default)
-                'pearson'
-                'fletcher'
+        formula : str
+            Formula for the dispersion. Options:
 
+            * ``"deviance"`` (default)
+            * ``"pearson"``
+            * ``"fletcher"``
         """
         if self._family == "normal":
             if self._known_dispersion:
@@ -1972,145 +1956,122 @@ class GAM:
         raise ValueError(f"Unsupported family {self._family!r}")
 
     def _binomial_overdispersion(self, formula: str | None = None) -> float:
-        r"""Over-Dispersion
+        r"""Estimate binomial over-dispersion.
 
         Parameters
         ----------
-         formula : str
-            Which formula to use, either 'replication' or
-            'pearson'. See Notes.
+        formula : str, optional
+            Which formula to use, either ``"replication"`` or
+            ``"pearson"``. See *Notes*.
 
         Returns
         -------
-         sigma2 : float
-            Estimate of over-dispersion. This is also saved as the
-            self._dispersion parameter so we only calculate this once
-            regardless of how many times this function is called.
+        sigma2 : float
+            Estimate of over-dispersion. Cached on
+            ``self._dispersion`` so repeated calls are O(1).
 
         Notes
         -----
-        When using covariate classes, the observed variance may exceed
-        the baseline for the family due to clustering in the
-        population. See GLM for motivation. That text gives two
-        methodologies for estimating over-dispersion. When there are
-        no covariate classes (multiple observations with identical
-        features), estimating over-dispersion is not possible.
+        When using covariate classes, the observed variance may
+        exceed the baseline for the family due to clustering in the
+        population (see [GLM]_). That text gives two methodologies
+        for estimating over-dispersion. Without covariate classes,
+        over-dispersion cannot be estimated.
 
         The most reliable assessment of over-dispersion is only
         possible when there is replication amongst the covariate
-        classes. This is best illustrated through example. Suppose we
-        have data on patients from two hospitals as shown in the table
-        below. Note that there are 3 rows corresponding to Men in
-        hospital 1. These entries could of course be pooled to give
-        the total patients and survivors for this covariate class, but
-        because they have not, it permits us to estimate
-        over-dispersion more reliably.
+        classes. As an example, suppose we have data on patients from
+        two hospitals as in the following table. Note that there are
+        three rows for males in hospital 1 -- these could be pooled,
+        but keeping them separate lets us estimate over-dispersion
+        more reliably.
 
-        Gender Hospital Patients Survivors
-          M       1       30        15
-          M       1       40        19
-          M       1       35        15
-          F       1       10         8
-          M       2       10         3
-          M       2       18         6
-          F       2       40        30
+        ========  ==========  ==========  ===========
+        Gender    Hospital    Patients    Survivors
+        ========  ==========  ==========  ===========
+        M         1           30          15
+        M         1           40          19
+        M         1           35          15
+        F         1           10           8
+        M         2           10           3
+        M         2           18           6
+        F         2           40          30
+        ========  ==========  ==========  ===========
 
         Because we are building a model based on gender and hospital
-        alone, we are assuming that all three entries are drawn from
-        the same binomial distribution. We could actually test that
-        hypothesis using, for example, Welch's t-Test. If the result
-        indicates a significant departure from the null hypothesis,
-        there must be some (unobserved) explanation for different
-        survival rates. Perhaps the repeated entries correspond to
-        different doctors, with some doctors being more effective than
-        others. Or perhaps the multiple entries refer to different
-        time periods, like before and after a new treatment was
-        instituted. Regardless, we can quantify the additional
-        variance and use it to make (hopefully) more accurate
-        confidence intervals.
+        alone, we assume the three M/1 entries are drawn from the
+        same binomial distribution; that hypothesis can be tested
+        with, for example, Welch's t-test. A significant departure
+        from the null hypothesis indicates an unobserved source of
+        between-replicate variation -- different doctors, different
+        time periods, etc. Quantifying the additional variance helps
+        produce more accurate confidence intervals.
 
-        When replication is present, we take the following approach,
-        per GLM. Suppose a particular covariate class (e.g. Gender=M,
-        Hospital=1) has r replicates. Across all r replicates,
-        determine the observed success rate, pi. In our example, we
-        have 105 patients and 49 survivors, for a total survival rate
-        of pi = 0.47. Next we compute the variance on r-1 DOF:
+        When replication is present, [GLM]_ suggests the following.
+        Suppose a covariate class (e.g. ``Gender=M, Hospital=1``) has
+        :math:`r` replicates. Across all :math:`r` replicates,
+        determine the observed success rate :math:`\pi`. In the
+        example we have 105 patients and 49 survivors, for
+        :math:`\pi = 0.47`. We then compute the variance on
+        :math:`r - 1` DOF,
 
-                  1    r  (y_j - m_j * pi)^2
-           s^2 = --- \sum ------------------
-                 r-1  j=1  m_j pi * (1 - pi)
+        .. math::
 
-        where y_j is the number of successes in the jth replicate, m_j
-        is the number of trials in the jth replicate, and s^2 is
-        estimated variance. Per GLM, this is an unbiased estimate of
-        the dispersion parameter. Filling in our specific numbers, we
-        get s^2 = 0.17, indicating under-dispersion. (Important note:
-        these are made up numbers, so there is actually more
-        consistency in the data than would be exhibited from a true
-        binomial model. Over-dispersion is more common than
-        under-dispersion.)
+           s^2 = \frac{1}{r - 1} \sum_{j=1}^r
+           \frac{(y_j - m_j \pi)^2}{m_j \pi (1 - \pi)},
 
-        Each covariate class with replication can be used to derive an
-        estimate of the dispersion parameter. If we expect the
-        dispersion to be independent of the covariate classes (which
-        may or may not be true), we can pool these estimates, weighted
-        by the degree of replication. If the kth covariate class has
-        r_k replicates and dispersion estimate s_k^2, the overall
-        estimate of dispersion is:
+        where :math:`y_j` is the number of successes in the
+        :math:`j`-th replicate and :math:`m_j` the number of trials.
+        Per [GLM]_ this is an unbiased estimate of the dispersion
+        parameter; on these numbers it gives :math:`s^2 = 0.17`,
+        indicating under-dispersion. (These are made up; over-
+        dispersion is more common than under-dispersion in practice.)
 
-                  \sum_k (r_k - 1) * s_k^2
-           s^2 = -------------------------
-                     \sum_k (r_k - 1)
+        Each covariate class with replication yields its own
+        dispersion estimate. Assuming the dispersion is independent
+        of the covariate classes (which may or may not be true) we
+        can pool by replication degree. With the :math:`k`-th class
+        having :math:`r_k` replicates and dispersion estimate
+        :math:`s_k^2`, the overall estimate is
 
-        Another important note: the above formula is *not* present in
-        GLM. That text just says to pool the estimates, but does not
-        specify how. This approach makes sense to me, but that doesn't
-        make it correct!
+        .. math::
 
-        When replication is not present, or even if the degree of
-        replication is small, the above methodology breaks
-        down. Instead, GLM advocates the use of a Pearson-residual
-        based approach. If pi_j is the model prediction for the jth
-        covariate class, then we estimate dispersion as:
+           s^2 = \frac{\sum_k (r_k - 1)\, s_k^2}{\sum_k (r_k - 1)}.
 
-                   1          (y_j - m_j * pi_j)^2
-           s^2 = ----- \sum -----------------------
-                 n - p   j  m_j * pi_j * (1 - pi_j)
+        This pooling formula is *not* in [GLM]_; that text just says
+        to pool the estimates without specifying how. This approach
+        makes sense, but that doesn't make it correct.
 
-        This is similar to the replicate-based formula, but we are
-        using the model prediction for pi_j instead of the pooled
-        observations, and we are using the n-p as the error DOF
-        instead of the number of replicates. This methodology still
-        breaks down when the sizes of the covariate classes, m_j, are
-        small.
+        When replication is sparse the methodology above breaks down.
+        [GLM]_ then advocates the Pearson-residual approach: with
+        :math:`\pi_j` the model prediction for the :math:`j`-th
+        covariate class,
 
-        In order to use the replicate-based formula, there must be at
-        least one covariate class exhibiting replication, and the
-        degree of replication must be at least two. If these
-        conditions are not met, and the user dictates that we use the
-        replicate-based formula, we simply ignore that directive and
-        use the Pearson-based approach. (It might be best to issue a
-        warning in this case, but we do not do that.)
+        .. math::
 
-        If this function is called without specifying which
-        methodology to use, we use the following criteria in assessing
-        whether there is enough replication to use the first
-        approach. First, there must be at least two covariate classes
-        exhibiting replication. Second, the degree of replication of
-        the most-replicated covariate class must be at least
-        3. Finally, the total replication degrees of freedom must be
-        at least 10. For example, in the example data set above, there
-        are two covariate classes exhibiting replication: Males in
-        Hospital 1, and Males in Hospital 2, with 3 and 2 degrees of
-        replication, respectively. The degree of replication of the
-        most-replicate covariate class is therefore equal to 3. The
-        degrees of freedom are (2-1) + (3-1) = 3, which is below the
-        threshold of 10. We would therefore use the Pearson-based
-        formula in this case.
+           s^2 = \frac{1}{n - p} \sum_j
+           \frac{(y_j - m_j \pi_j)^2}{m_j \pi_j (1 - \pi_j)}.
 
-        These criteria are completely arbitrary! I need to do more
-        research to determine the appropriate criteria.
+        This uses the model prediction instead of the pooled
+        observation, and :math:`n - p` for the error DOF instead of
+        the number of replicates. It still breaks down when covariate
+        class sizes :math:`m_j` are small.
 
+        To use the replicate-based formula at least one covariate
+        class must show replication and the degree of replication
+        must be at least two. If those conditions fail and the user
+        requested the replicate-based formula, the directive is
+        silently ignored and the Pearson-based approach used.
+
+        If ``formula`` is not specified, the criterion for using
+        replication is: at least two covariate classes show
+        replication; the most-replicated class has degree at least 3;
+        and the total replication DOF is at least 10. In the example
+        above replication classes are M/1 and M/2 with replication 3
+        and 2, total DOF :math:`(2-1) + (3-1) = 3` -- below the
+        threshold of 10 -- so the Pearson formula is used. These
+        criteria are arbitrary and would benefit from further
+        research.
         """
 
         if not self._has_covariate_classes:
@@ -2304,15 +2265,14 @@ class GAM:
         return dof
 
     def aic(self) -> float:
-        """Akaike Information Criterion
+        """Akaike Information Criterion.
 
-        Returns the AIC for the fitted model, useful for choosing
-        smoothing parameters. The AIC we compute is actually off
-        by a constant factor, making it easier to compute without
-        detracting from its role in model selection.
+        Useful for choosing smoothing parameters. The AIC computed
+        here is off by a constant factor, which simplifies the
+        computation without affecting model-selection rankings.
 
-        Different authors seem to throw in multiplicative or additive
-        factors willy-nilly since it doesn't affect model selection.
+        Different authors throw in multiplicative or additive factors
+        willy-nilly since they do not affect model selection.
         """
         p = self.dof()
         if not self._known_dispersion:
@@ -2404,60 +2364,62 @@ class GAM:
         return 1.0 - self.deviance() / null_dev
 
     def ubre(self, gamma: float = 1.0) -> float:
-        """Un-Biased Risk Estimator
+        """Un-Biased Risk Estimator.
 
         Returns the Un-Biased Risk Estimator as discussed in Sections
-        6.2.1 and 6.2.5 of [GAMr]. This can be used for choosing the
-        smoothing parameter when the dispersion is known.
+        6.2.1 and 6.2.5 of [GAMr]_. Useful for choosing the smoothing
+        parameter when the dispersion is known.
 
-        As discussed in Section 6.2.5 of [GAMr], sometimes it is helpful
-        to force smoother fits by exaggerating the effective degrees of
-        freedom. In that case, a value of gamma > 1. may be desirable.
+        As discussed in Section 6.2.5 of [GAMr]_, sometimes it is
+        helpful to force smoother fits by exaggerating the effective
+        degrees of freedom; a value of ``gamma > 1`` may be desirable
+        in that case.
         """
         return self.deviance() + 2.0 * gamma * self.dispersion() * self.dof()
 
     def gcv(self, gamma: float = 1.0) -> float:
-        """Generalized Cross Validation
+        """Generalized Cross Validation score.
 
-        This function returns the Generalized Cross Validation (GCV)
-        score, which can be used for choosing the smoothing parameter
-        when the dispersion is unknown.
+        Useful for choosing the smoothing parameter when the
+        dispersion is unknown.
 
-        As discussed in Section 6.2.5 of [GAMr], sometimes it is helpful
-        to force smoother fits by exaggerating the effective degrees of
-        freedom. In that case, a value of gamma > 1. may be desirable.
+        As discussed in Section 6.2.5 of [GAMr]_, sometimes it is
+        helpful to force smoother fits by exaggerating the effective
+        degrees of freedom; a value of ``gamma > 1`` may be desirable
+        in that case.
         """
         denom = self._num_obs - gamma * self.dof()
         return self._num_obs * self.deviance() / (denom * denom)
 
     def summary(self) -> None:
-        """Print summary statistics associated with fitted model.
+        """Print summary statistics for the fitted model.
 
-        Prints statistics for the overall model, as well as for
-        each individual feature (see the __str__() function in
-        each feature type for details about what is printed
-        there).
+        Prints statistics for the overall model and for each
+        individual feature (see the ``__str__`` method on each feature
+        class for the per-feature output).
 
-        For the overall model, the following are printed:
-           phi:      Estimated dispersion parameter. Omitted
-                     if specified or if it is known for the
-                     Family (e.g. Poisson).
-           edof:     Estimated degrees of freedom.
-           Deviance: The difference between the log-likelihood of
-                     the model that fits the data perfectly and
-                     that of the fitted model, times twice the
-                     dispersion.
-           AIC:      Akaike Information Criterion.
-           AICc:     AIC with correction for finite data sets.
-           BIC:      Bayesian Information Criterion.
-           R^2:      Deviance-based pseudo-R^2.
-           UBRE:     Unbiased Risk Estimator (if dispersion is known).
-           GCV:      Generalized Cross Validation (if dispersion is estimated).
+        The overall model section reports:
 
-        For more details on these parameters, see the documentation
-        in the corresponding functions. It would also be nice to have
-        confidence intervals at least on the estimated dispersion
-        parameter.
+        ============  =====================================================
+        ``phi``       Estimated dispersion parameter. Omitted when
+                      dispersion was supplied at construction time or is
+                      fixed by the family (e.g. Poisson).
+        ``edof``      Estimated degrees of freedom.
+        ``Deviance``  Twice the dispersion times the difference between
+                      the log-likelihood of the saturated model and that
+                      of the fitted model.
+        ``AIC``       Akaike Information Criterion.
+        ``AICc``      AIC corrected for finite data sets.
+        ``BIC``       Bayesian Information Criterion.
+        ``R^2``       Deviance-based pseudo-:math:`R^2`.
+        ``UBRE``      Unbiased Risk Estimator (when dispersion is known).
+        ``GCV``       Generalized Cross Validation (when dispersion is
+                      estimated).
+        ============  =====================================================
+
+        See the corresponding methods (:meth:`aic`, :meth:`aicc`,
+        :meth:`bic`, :meth:`r_squared`, :meth:`ubre`, :meth:`gcv`)
+        for definitions.
         """
 
         print("Model Statistics")

@@ -20,6 +20,17 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
+"""Linear feature: a single slope with closed-form regularized solves.
+
+:class:`_LinearFeature` contributes ``m * (x - mean(x))`` to the linear
+predictor. The per-feature primal step has a closed-form solution at
+every supported regularization combination -- ridge folds into the
+denominator, L1 / group lasso / L_inf group lasso into a 1-D
+soft-threshold, Huber into a clipped quadratic -- so this branch never
+calls cvxpy. Sign / lower / upper convex constraints clip the
+unconstrained optimum onto the feasible interval.
+"""
+
 from __future__ import annotations
 
 import math
@@ -47,56 +58,76 @@ class _LinearFeature(_Feature):
         constraints: dict[str, Any] | None = None,
         load_from_file: str | None = None,
     ) -> None:
-        """Initialize feature model (independent of data).
+        r"""Initialize feature model (independent of data).
 
         Parameters
         ----------
         name : str
-            Name for feature, used to make plots.
-        transform : callable
-            Transformation applied to the data (e.g. ``np.log1p``).
-        regularization : dict
-            Description of regularization terms. ``l1`` takes
-            ``{"coef": λ}`` and adds ``λ · |m|`` to the objective,
-            shrinking the slope toward zero with a closed-form 1-D
-            soft-threshold. ``l2`` (ridge) takes ``{"coef": λ}`` and
-            adds ``λ · m²`` to the objective. ``huber`` takes
-            ``{"coef": λ, "delta": δ}`` and adds ``λ · h_δ(m)`` to
-            the objective, where ``h_δ`` is the standard Huber
-            function (``0.5·m²`` for ``|m| ≤ δ``, ``δ·|m| - 0.5·δ²``
-            otherwise). It behaves like ridge for small slopes and
-            like L1 for large slopes, bounding the per-coefficient
-            influence of the penalty. ``huber`` may be combined with
-            ``l2`` (both smooth at the origin) but not with ``l1`` /
-            ``group_lasso`` / ``group_lasso_inf``. ``group_lasso``
-            takes ``{"coef": λ}`` and adds ``λ · ‖f_j‖₂ = λ · |m| ·
-            √(xᵀx)`` to the objective, which zeros out the entire
-            feature once ``λ`` is large enough. ``group_lasso_inf``
-            takes ``{"coef": λ}`` and adds ``λ · ‖f_j‖_∞ = λ · |m| ·
-            max|x - x̄|``, the L_∞-norm variant of the group lasso;
-            on a single-slope feature it has the same zero-the-slope
-            effect as the L2 group lasso, but the threshold scales
-            with the data range rather than its L2 norm. ``l1``,
-            ``group_lasso``, and ``group_lasso_inf`` all combine
-            additively in the soft-threshold and stack with ``l2``
-            (elastic net). The top-level ``prior`` key (if present)
-            provides a scalar prior estimate for the slope.
-        constraints : dict
+            Name for the feature, used to make plots.
+        transform : callable, optional
+            Transformation applied to the data (e.g.
+            :func:`numpy.log1p`).
+        regularization : dict, optional
+            Description of regularization terms. Supported keys:
+
+            * ``l1`` -- ``{"coef": lam}``; adds :math:`\lambda |m|`
+              to the objective, shrinking the slope toward zero via
+              a closed-form 1-D soft-threshold.
+            * ``l2`` (ridge) -- ``{"coef": lam}``; adds
+              :math:`\lambda m^2` to the objective.
+            * ``huber`` -- ``{"coef": lam, "delta": d}``; adds
+              :math:`\lambda h_\delta(m)`, where :math:`h_\delta` is
+              the standard Huber function
+              (:math:`0.5 m^2` for :math:`|m| \le \delta`,
+              :math:`\delta |m| - 0.5 \delta^2` otherwise). Behaves
+              like ridge for small slopes and like L1 for large
+              slopes, bounding the per-coefficient influence of the
+              penalty. May be combined with ``l2`` (both smooth at
+              the origin) but not with ``l1`` / ``group_lasso`` /
+              ``group_lasso_inf``.
+            * ``group_lasso`` -- ``{"coef": lam}``; adds
+
+              .. math::
+
+                 \lambda \|f_j\|_2 =
+                 \lambda |m| \sqrt{x^\top x},
+
+              which zeros out the entire feature once
+              :math:`\lambda` is large enough.
+            * ``group_lasso_inf`` -- ``{"coef": lam}``; adds
+
+              .. math::
+
+                 \lambda \|f_j\|_\infty =
+                 \lambda |m| \max_i |x_i - \bar{x}|,
+
+              the :math:`L_\infty`-norm variant of the group lasso.
+              On a single-slope feature it has the same
+              zero-the-slope effect as the :math:`L_2` group lasso,
+              but the threshold scales with the data range rather
+              than its :math:`L_2` norm.
+
+            ``l1``, ``group_lasso``, and ``group_lasso_inf`` all
+            combine additively in the soft-threshold and stack with
+            ``l2`` (elastic net). The top-level ``prior`` key (if
+            present) provides a scalar prior estimate for the slope.
+        constraints : dict, optional
             Optional convex shape constraints on the slope. ``sign``
-            takes ``"nonnegative"`` (``m ≥ 0``) or ``"nonpositive"``
-            (``m ≤ 0``); ``lower`` and ``upper`` take floats and bound
-            ``m`` from below / above. ``sign`` is shorthand and may
-            not be combined with ``lower`` / ``upper``. The
-            single-slope linear feature does not support ``monotonic``
-            / ``convex`` / ``concave`` (those are well-defined only
-            on multi-coefficient features); passing them raises.
-            Constraints clip the per-feature primal step's
-            unconstrained closed-form solution -- the objective is
-            convex in ``m``, so projection onto ``[lower, upper]`` is
-            the constrained optimum. No cvxpy on this path.
-        load_from_file : str
-            If provided, restore parameters from this pickle path. All
-            other parameters are ignored when loading.
+            takes ``"nonnegative"`` (:math:`m \ge 0`) or
+            ``"nonpositive"`` (:math:`m \le 0`); ``lower`` and
+            ``upper`` take floats and bound :math:`m` from below /
+            above. ``sign`` is shorthand and may not be combined with
+            ``lower`` / ``upper``. The single-slope linear feature
+            does not support ``monotonic`` / ``convex`` / ``concave``
+            (those are well-defined only on multi-coefficient
+            features); passing them raises. Constraints clip the
+            per-feature primal step's unconstrained closed-form
+            solution -- the objective is convex in :math:`m`, so
+            projection onto ``[lower, upper]`` is the constrained
+            optimum. No cvxpy on this path.
+        load_from_file : str, optional
+            If provided, restore parameters from this pickle path.
+            All other parameters are ignored when loading.
         """
         self.__type__ = "linear"
         if load_from_file is not None:
@@ -431,19 +462,19 @@ class _LinearFeature(_Feature):
         self._b = mv["b"]
 
     def optimize(self, fpumz: FloatArray, rho: float) -> FloatArray:
-        """Solve the per-feature primal step.
+        r"""Solve the per-feature primal step.
 
         Parameters
         ----------
-        fpumz : (m,) ndarray
-            Vector representing :math:`\\bar{f}^k + u^k - \\bar{z}^k`.
+        fpumz : ndarray of shape ``(m,)``
+            Vector representing :math:`\bar{f}^k + u^k - \bar{z}^k`.
         rho : float
             ADMM parameter. Must be positive.
 
         Returns
         -------
-        fkp1 : (m,) ndarray
-            Vector representing this feature's contribution to the response.
+        fkp1 : ndarray of shape ``(m,)``
+            This feature's contribution to the response.
         """
         y = self._m * self._x - fpumz
 

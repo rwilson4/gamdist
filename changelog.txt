@@ -1,3 +1,29 @@
+2026-04-27 : Sphinx-ready docstring audit
+- Audited every module's docstrings and reworked them for clean Sphinx /
+  Napoleon rendering. No behavior changes; pure documentation.
+- Added module-level docstrings to feature.py, gamdist.py,
+  categorical_feature.py, linear_feature.py, spline_feature.py, and
+  proximal_operators.py. Expanded gamdist/__init__.py's module docstring.
+  Tightened the existing module docstrings on multi_task_features.py and
+  multi_task_gamdist.py to use Sphinx cross-references.
+- Reformatted GAM.__init__'s References section to use Sphinx footnote /
+  citation syntax (``.. [label] description``) so [GAMADMM]_, [GAMr]_,
+  [ADMM]_, etc. become real cross-references instead of indented prose.
+  Promoted the bulk of __init__'s docstring to a class-level docstring on
+  GAM, where Sphinx and Napoleon prefer it.
+- Wrapped scattered Unicode-math snippets across categorical_feature,
+  linear_feature, spline_feature, multi_task_features, gamdist (deviance,
+  binomial overdispersion, _optimize, etc.) and proximal_operators in
+  ``:math:`` roles or ``.. math::`` blocks; embedded ASCII tables
+  (binomial covariate-class examples) are now reST grid tables.
+- Expanded docstrings on the abstract _Feature interface methods so
+  Sphinx-rendered subclasses inherit useful descriptions, and added
+  full docstrings to every public-facing proximal-operator function in
+  gamdist/proximal_operators.py (previously most had no docstring).
+- Normalized NumPy-style parameter blocks to drop the leading-space
+  indentation that confused Napoleon; standard-form ``name : type``
+  with consistent alignment throughout.
+
 2026-04-27 : Multi-task GAM (joint fit across K outcomes with convex coupling)
 - Added MultiTaskGAM and a new feature module gamdist/multi_task_features.py
   for fitting K supervised-learning tasks jointly under a shared feature set

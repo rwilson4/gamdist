@@ -20,6 +20,27 @@
 # LLC. A description of changes may be found in the change log
 # accompanying this source code.
 
+"""Cubic regression spline feature with a curvature smoothness penalty.
+
+:class:`_SplineFeature` represents a smooth univariate term in the
+linear predictor as a cubic regression spline on adaptively-chosen
+knots. The fit is regularized by an integrated squared second
+derivative penalty; the smoothing parameter is determined to hit a
+target relative-DOF budget (``rel_dof``), not by cross-validation.
+
+Two solver paths share the same objective:
+
+* Closed-form Cholesky path -- used when no shape constraints and no
+  group-lasso terms are active.
+* cvxpy path -- used when group lasso, L_inf group lasso, or shape
+  constraints (sign / lower / upper / monotonic / convex / concave on
+  the values evaluated at the knots) are present.
+
+Helper functions :func:`_sample`, :func:`_evaluate_spline_basis`, and
+:func:`_omega_curvature` build the basis matrix and curvature penalty
+matrix used in both paths.
+"""
+
 from __future__ import annotations
 
 import math
@@ -189,29 +210,37 @@ class _SplineFeature(_Feature):
         constraints: dict[str, Any] | None = None,
         load_from_file: str | None = None,
     ) -> None:
-        """Initialize feature model (independent of data).
+        r"""Initialize feature model (independent of data).
 
         Parameters
         ----------
         name : str
-            Name for feature, used to make plots.
-        transform : callable
-            Transformation applied to the data (e.g. ``np.log1p``).
+            Name for the feature, used to make plots.
+        transform : callable, optional
+            Transformation applied to the data (e.g.
+            :func:`numpy.log1p`).
         rel_dof : float
             Relative degrees of freedom for the curvature smoother.
-        regularization : dict
-            Optional extra regularization beyond the built-in curvature
-            penalty. ``group_lasso`` takes ``{"coef": λ}`` and adds
-            ``λ · ‖N θ‖₂`` to the objective, zeroing out the entire
-            spline contribution once λ is large enough. ``group_lasso_inf``
-            takes ``{"coef": λ}`` and adds ``λ · ‖N θ‖_∞`` -- the L_∞
-            variant clips the largest pointwise contribution rather than
-            applying uniform L2 contraction. The two variants combine
-            additively when both are specified.
-        constraints : dict
+        regularization : dict, optional
+            Optional extra regularization beyond the built-in
+            curvature penalty.
+
+            * ``group_lasso`` -- ``{"coef": lam}``; adds
+              :math:`\lambda \|N \theta\|_2`, zeroing out the entire
+              spline contribution once :math:`\lambda` is large
+              enough.
+            * ``group_lasso_inf`` -- ``{"coef": lam}``; adds
+              :math:`\lambda \|N \theta\|_\infty`, the
+              :math:`L_\infty` variant. Clips the largest pointwise
+              contribution rather than applying uniform :math:`L_2`
+              contraction.
+
+            The two variants combine additively when both are
+            specified.
+        constraints : dict, optional
             Optional convex shape constraints on the fitted spline
-            evaluated at the knots ``xi``. ``lower`` / ``upper`` take
-            floats and bound the spline value. ``sign``
+            evaluated at the knots :math:`\xi`. ``lower`` / ``upper``
+            take floats and bound the spline value. ``sign``
             (``"nonnegative"`` or ``"nonpositive"``) is shorthand and
             may not combine with ``lower`` / ``upper``. ``monotonic``
             (``"increasing"`` or ``"decreasing"``) constrains
@@ -222,11 +251,11 @@ class _SplineFeature(_Feature):
             global proxy for the smooth cubic spline (sufficient in
             practice for the intended dose-response / regulated use
             cases). Constraints append to the cvxpy program in
-            ``optimize`` -- the closed-form Cholesky path is only
+            :meth:`optimize` -- the closed-form Cholesky path is only
             used when no constraints and no group lasso are active.
-        load_from_file : str
-            If provided, restore parameters from this pickle path. All
-            other parameters are ignored when loading.
+        load_from_file : str, optional
+            If provided, restore parameters from this pickle path.
+            All other parameters are ignored when loading.
         """
         self.__type__ = "spline"
         if load_from_file is not None:
@@ -340,7 +369,30 @@ class _SplineFeature(_Feature):
         verbose: bool = False,
         covariate_class_sizes: npt.NDArray[Any] | None = None,
     ) -> None:
-        """Compute feature-specific state from data."""
+        """Compute feature-specific state from training data.
+
+        Selects knot locations from the data (see :func:`_sample`),
+        builds the basis matrix :math:`N` (see
+        :func:`_evaluate_spline_basis`), the curvature penalty
+        :math:`\\Omega` (see :func:`_omega_curvature`), and chooses
+        the smoothing parameter to hit the requested ``rel_dof``.
+
+        Parameters
+        ----------
+        x : ndarray
+            Observations corresponding to this feature.
+        smoothing : float
+            Multiplicative scale applied to the curvature penalty.
+        save_flag : bool
+            If ``True``, save state to disk after initialization.
+        save_prefix : str, optional
+            Prefix used to derive the save filename.
+        verbose : bool
+            Print mildly helpful information when ``True``.
+        covariate_class_sizes : ndarray, optional
+            Unused for spline features; present to satisfy the
+            :class:`~gamdist.feature._Feature` interface.
+        """
         if self._has_transform:
             self._x = np.asarray(self._transform(x), dtype=float)
         else:
@@ -518,19 +570,19 @@ class _SplineFeature(_Feature):
             self._constraint_concave = False
 
     def optimize(self, fpumz: FloatArray, rho: float) -> FloatArray:
-        """Solve the per-feature primal step.
+        r"""Solve the per-feature primal step.
 
         Parameters
         ----------
-        fpumz : (m,) ndarray
-            Vector representing :math:`\\bar{f}^k + u^k - \\bar{z}^k`.
+        fpumz : ndarray of shape ``(m,)``
+            Vector representing :math:`\bar{f}^k + u^k - \bar{z}^k`.
         rho : float
             ADMM parameter. Must be positive.
 
         Returns
         -------
-        fkp1 : (m,) ndarray
-            Vector representing this feature's contribution to the response.
+        fkp1 : ndarray of shape ``(m,)``
+            This feature's contribution to the response.
         """
         if self._has_group_lasso or self._has_group_lasso_inf or self._has_constraints:
             self._theta = self._optimize_cvx(fpumz, rho)
