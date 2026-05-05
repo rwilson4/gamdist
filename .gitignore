@@ -22,3 +22,5 @@ coverage.xml
 .idea/
 .vscode/
 .DS_Store
+
+docs/_build/

@@ -306,15 +306,15 @@ class GAM:
     link : str, optional
         Link function. Supported links and their canonical families:
 
-        ====================  ====================
-        Link                  Canonical for family
-        ====================  ====================
-        ``identity``          ``normal``
-        ``logistic``          ``binomial``
-        ``log``               ``poisson``
-        ``reciprocal``        ``gamma``
+        ======================  ====================
+        Link                    Canonical for family
+        ======================  ====================
+        ``identity``            ``normal``
+        ``logistic``            ``binomial``
+        ``log``                 ``poisson``
+        ``reciprocal``          ``gamma``
         ``reciprocal_squared``  ``inverse_gaussian``
-        ====================  ====================
+        ======================  ====================
 
         ``probit`` and ``complementary_log_log`` are also accepted
         (non-canonical for ``binomial``). If not specified, the

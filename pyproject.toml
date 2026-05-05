@@ -37,6 +37,7 @@ dev = [
     "mypy>=1.8",
     "ruff>=0.5",
     "pandas-stubs",
+    "sphinx>=7.0",
 ]
 
 [project.urls]
