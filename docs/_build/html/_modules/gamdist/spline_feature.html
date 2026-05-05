@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>gamdist.spline_feature &#8212; gamdist 0.2.0 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=5ecbeea2" />
+    <link rel="stylesheet" type="text/css" href="../../_static/basic.css?v=b08954a9" />
+    <link rel="stylesheet" type="text/css" href="../../_static/alabaster.css?v=27fed22d" />
+    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+   
+  <link rel="stylesheet" href="../../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <h1>Source code for gamdist.spline_feature</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2017 Match Group, LLC</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you</span>
+<span class="c1"># may not use this file except in compliance with the License. You may</span>
+<span class="c1"># obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span>
+<span class="c1"># implied.  See the License for the specific language governing</span>
+<span class="c1"># permissions and limitations under the License.</span>
+<span class="c1">#</span>
+<span class="c1"># Passing untrusted user input may have unintended consequences. Not</span>
+<span class="c1"># designed to consume input from unknown sources (i.e., the public</span>
+<span class="c1"># internet).</span>
+<span class="c1">#</span>
+<span class="c1"># This file has been modified from the original release by Match Group</span>
+<span class="c1"># LLC. A description of changes may be found in the change log</span>
+<span class="c1"># accompanying this source code.</span>
+
+<span class="sd">&quot;&quot;&quot;Cubic regression spline feature with a curvature smoothness penalty.</span>
+
+<span class="sd">:class:`_SplineFeature` represents a smooth univariate term in the</span>
+<span class="sd">linear predictor as a cubic regression spline on adaptively-chosen</span>
+<span class="sd">knots. The fit is regularized by an integrated squared second</span>
+<span class="sd">derivative penalty; the smoothing parameter is determined to hit a</span>
+<span class="sd">target relative-DOF budget (``rel_dof``), not by cross-validation.</span>
+
+<span class="sd">Two solver paths share the same objective:</span>
+
+<span class="sd">* Closed-form Cholesky path -- used when no shape constraints and no</span>
+<span class="sd">  group-lasso terms are active.</span>
+<span class="sd">* cvxpy path -- used when group lasso, L_inf group lasso, or shape</span>
+<span class="sd">  constraints (sign / lower / upper / monotonic / convex / concave on</span>
+<span class="sd">  the values evaluated at the knots) are present.</span>
+
+<span class="sd">Helper functions :func:`_sample`, :func:`_evaluate_spline_basis`, and</span>
+<span class="sd">:func:`_omega_curvature` build the basis matrix and curvature penalty</span>
+<span class="sd">matrix used in both paths.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pickle</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">cvxpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">cvx</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy.typing</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">npt</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">scipy.linalg</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">la</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.feature</span><span class="w"> </span><span class="kn">import</span> <span class="n">_Feature</span>
+
+<span class="n">FloatArray</span> <span class="o">=</span> <span class="n">npt</span><span class="o">.</span><span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
+<span class="n">Transform</span> <span class="o">=</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">npt</span><span class="o">.</span><span class="n">NDArray</span><span class="p">[</span><span class="n">Any</span><span class="p">]],</span> <span class="n">npt</span><span class="o">.</span><span class="n">NDArray</span><span class="p">[</span><span class="n">Any</span><span class="p">]]</span>
+
+
+<div class="viewcode-block" id="SplineError">
+<a class="viewcode-back" href="../../code.html#gamdist.spline_feature.SplineError">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">SplineError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Raised when spline knot selection or basis evaluation fails.&quot;&quot;&quot;</span></div>
+
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_sample</span><span class="p">(</span><span class="n">x</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FloatArray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Sample knots from an array, culling duplicates and very-close points.&quot;&quot;&quot;</span>
+    <span class="n">num_points</span> <span class="o">=</span> <span class="mi">100</span>
+    <span class="n">min_dist</span> <span class="o">=</span> <span class="mf">1e-3</span>
+    <span class="n">alpha</span> <span class="o">=</span> <span class="mf">28.2</span>
+    <span class="n">max_samples</span> <span class="o">=</span> <span class="mi">1000</span>
+
+    <span class="n">n</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">n</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">x</span>
+
+    <span class="n">y</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="n">z</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n</span><span class="p">)</span>
+    <span class="n">z</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">y</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">j</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">n</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">y</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">z</span><span class="p">[</span><span class="n">j</span><span class="p">]</span> <span class="o">+</span> <span class="n">min_dist</span><span class="p">:</span>
+            <span class="n">j</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="n">z</span><span class="p">[</span><span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">y</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+
+    <span class="k">if</span> <span class="n">j</span> <span class="o">&lt;</span> <span class="n">num_points</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">z</span><span class="p">[</span><span class="mi">0</span> <span class="p">:</span> <span class="p">(</span><span class="n">j</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)]</span>
+
+    <span class="n">num_samples</span> <span class="o">=</span> <span class="n">num_points</span> <span class="o">+</span> <span class="nb">int</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">alpha</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">log10</span><span class="p">(</span><span class="n">j</span> <span class="o">+</span> <span class="mi">2</span> <span class="o">-</span> <span class="n">num_points</span><span class="p">)))</span>
+    <span class="n">num_samples</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">num_samples</span><span class="p">,</span> <span class="n">max_samples</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">j</span> <span class="o">&lt;</span> <span class="n">num_samples</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">z</span><span class="p">[</span><span class="mi">0</span> <span class="p">:</span> <span class="p">(</span><span class="n">j</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)]</span>
+
+    <span class="n">out</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">num_samples</span><span class="p">)</span>
+    <span class="n">zz</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">j</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">/</span> <span class="n">num_samples</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_samples</span> <span class="o">-</span> <span class="mi">1</span><span class="p">):</span>
+        <span class="n">k</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">i</span> <span class="o">*</span> <span class="n">zz</span><span class="p">))</span>
+        <span class="n">out</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">z</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+    <span class="n">out</span><span class="p">[</span><span class="n">num_samples</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">z</span><span class="p">[</span><span class="n">j</span><span class="p">]</span>
+    <span class="k">return</span> <span class="n">out</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_evaluate_spline_basis</span><span class="p">(</span><span class="n">X</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">xi</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FloatArray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Evaluate the cubic regression-spline basis at a single point.&quot;&quot;&quot;</span>
+    <span class="n">K</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">xi</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">K</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">SplineError</span><span class="p">(</span><span class="s2">&quot;Must have at least two knots.&quot;</span><span class="p">)</span>
+
+    <span class="n">N</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="n">K</span><span class="p">)</span>
+    <span class="n">N</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">X</span>
+
+    <span class="n">d</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">K</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="n">last_xi</span> <span class="o">=</span> <span class="n">xi</span><span class="p">[</span><span class="n">K</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">K</span> <span class="o">-</span> <span class="mi">1</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">xi</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">X</span><span class="p">:</span>
+            <span class="n">term1</span> <span class="o">=</span> <span class="n">X</span> <span class="o">-</span> <span class="n">xi</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+            <span class="n">d</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">=</span> <span class="n">term1</span> <span class="o">*</span> <span class="n">term1</span> <span class="o">*</span> <span class="n">term1</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">continue</span>
+
+        <span class="k">if</span> <span class="n">last_xi</span> <span class="o">&lt;</span> <span class="n">X</span><span class="p">:</span>
+            <span class="n">term2</span> <span class="o">=</span> <span class="n">X</span> <span class="o">-</span> <span class="n">last_xi</span>
+            <span class="n">d</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">-=</span> <span class="n">term2</span> <span class="o">*</span> <span class="n">term2</span> <span class="o">*</span> <span class="n">term2</span>
+
+        <span class="n">d</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">/=</span> <span class="n">last_xi</span> <span class="o">-</span> <span class="n">xi</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+
+    <span class="n">last_d</span> <span class="o">=</span> <span class="n">d</span><span class="p">[</span><span class="n">K</span> <span class="o">-</span> <span class="mi">2</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">K</span> <span class="o">-</span> <span class="mi">2</span><span class="p">):</span>
+        <span class="n">N</span><span class="p">[</span><span class="n">k</span> <span class="o">+</span> <span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">d</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">-</span> <span class="n">last_d</span>
+
+    <span class="k">return</span> <span class="n">N</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_omega_curvature</span><span class="p">(</span><span class="n">xi</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FloatArray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build the integrated-curvature penalty matrix Omega.&quot;&quot;&quot;</span>
+    <span class="n">K</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">xi</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">K</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">SplineError</span><span class="p">(</span><span class="s2">&quot;Must have at least two knots.&quot;</span><span class="p">)</span>
+
+    <span class="n">Omega</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">K</span><span class="p">,</span> <span class="n">K</span><span class="p">))</span>
+
+    <span class="n">last_xi</span> <span class="o">=</span> <span class="n">xi</span><span class="p">[</span><span class="n">K</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span>
+    <span class="n">second_last_xi</span> <span class="o">=</span> <span class="n">xi</span><span class="p">[</span><span class="n">K</span> <span class="o">-</span> <span class="mi">2</span><span class="p">]</span>
+
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">K</span><span class="p">):</span>
+        <span class="n">term</span> <span class="o">=</span> <span class="n">second_last_xi</span> <span class="o">-</span> <span class="n">xi</span><span class="p">[</span><span class="n">i</span> <span class="o">-</span> <span class="mi">2</span><span class="p">]</span>
+        <span class="n">Omega</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="mf">12.0</span> <span class="o">*</span> <span class="n">term</span> <span class="o">*</span> <span class="n">term</span> <span class="o">/</span> <span class="p">(</span><span class="n">last_xi</span> <span class="o">-</span> <span class="n">xi</span><span class="p">[</span><span class="n">i</span> <span class="o">-</span> <span class="mi">2</span><span class="p">])</span>
+
+        <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">K</span><span class="p">):</span>
+            <span class="n">term1</span> <span class="o">=</span> <span class="p">(</span><span class="n">second_last_xi</span> <span class="o">-</span> <span class="n">xi</span><span class="p">[</span><span class="n">j</span> <span class="o">-</span> <span class="mi">2</span><span class="p">])</span> <span class="o">/</span> <span class="p">(</span><span class="n">last_xi</span> <span class="o">-</span> <span class="n">xi</span><span class="p">[</span><span class="n">j</span> <span class="o">-</span> <span class="mi">2</span><span class="p">])</span>
+            <span class="n">term1</span> <span class="o">*=</span> <span class="mf">12.0</span> <span class="o">/</span> <span class="p">(</span><span class="n">last_xi</span> <span class="o">-</span> <span class="n">xi</span><span class="p">[</span><span class="n">i</span> <span class="o">-</span> <span class="mi">2</span><span class="p">])</span>
+            <span class="n">term2</span> <span class="o">=</span> <span class="n">second_last_xi</span> <span class="o">*</span> <span class="p">(</span><span class="n">last_xi</span> <span class="o">-</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">xi</span><span class="p">[</span><span class="n">i</span> <span class="o">-</span> <span class="mi">2</span><span class="p">]</span> <span class="o">+</span> <span class="n">xi</span><span class="p">[</span><span class="n">j</span> <span class="o">-</span> <span class="mi">2</span><span class="p">]))</span>
+            <span class="n">term2</span> <span class="o">-=</span> <span class="n">xi</span><span class="p">[</span><span class="n">i</span> <span class="o">-</span> <span class="mi">2</span><span class="p">]</span> <span class="o">*</span> <span class="n">last_xi</span>
+            <span class="n">term2</span> <span class="o">+=</span> <span class="n">xi</span><span class="p">[</span><span class="n">j</span> <span class="o">-</span> <span class="mi">2</span><span class="p">]</span> <span class="o">*</span> <span class="p">(</span><span class="mf">1.5</span> <span class="o">*</span> <span class="n">xi</span><span class="p">[</span><span class="n">i</span> <span class="o">-</span> <span class="mi">2</span><span class="p">]</span> <span class="o">-</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="n">xi</span><span class="p">[</span><span class="n">j</span> <span class="o">-</span> <span class="mi">2</span><span class="p">])</span>
+            <span class="n">Omega</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">term1</span> <span class="o">*</span> <span class="n">term2</span>
+
+        <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">i</span><span class="p">):</span>
+            <span class="n">Omega</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">j</span><span class="p">]</span> <span class="o">=</span> <span class="n">Omega</span><span class="p">[</span><span class="n">j</span><span class="p">,</span> <span class="n">i</span><span class="p">]</span>
+    <span class="k">return</span> <span class="n">Omega</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_solve_pos</span><span class="p">(</span><span class="n">A</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">,</span> <span class="n">B</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FloatArray</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Solve ``A @ X = B`` for symmetric positive-definite ``A``.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">la</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">A</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">assume_a</span><span class="o">=</span><span class="s2">&quot;pos&quot;</span><span class="p">,</span> <span class="n">check_finite</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_determine_smoothing</span><span class="p">(</span>
+    <span class="n">NtN</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">,</span>
+    <span class="n">Omega</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">,</span>
+    <span class="n">dof</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">lmbda_low</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+    <span class="n">lmbda_high</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-12</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Bisect on the smoothing parameter to hit the target effective DOF.&quot;&quot;&quot;</span>
+    <span class="n">A</span> <span class="o">=</span> <span class="n">NtN</span> <span class="o">+</span> <span class="n">lmbda_high</span> <span class="o">*</span> <span class="n">Omega</span>
+    <span class="n">A_solve_NtN</span> <span class="o">=</span> <span class="n">_solve_pos</span><span class="p">(</span><span class="n">A</span><span class="p">,</span> <span class="n">NtN</span><span class="p">)</span>
+
+    <span class="k">while</span> <span class="n">A_solve_NtN</span><span class="o">.</span><span class="n">trace</span><span class="p">()</span> <span class="o">&gt;</span> <span class="n">dof</span><span class="p">:</span>
+        <span class="n">lmbda_low</span> <span class="o">=</span> <span class="n">lmbda_high</span>
+        <span class="n">lmbda_high</span> <span class="o">*=</span> <span class="mf">2.0</span>
+        <span class="n">A</span> <span class="o">=</span> <span class="n">NtN</span> <span class="o">+</span> <span class="n">lmbda_high</span> <span class="o">*</span> <span class="n">Omega</span>
+        <span class="n">A_solve_NtN</span> <span class="o">=</span> <span class="n">_solve_pos</span><span class="p">(</span><span class="n">A</span><span class="p">,</span> <span class="n">NtN</span><span class="p">)</span>
+
+    <span class="n">tolerance</span> <span class="o">*=</span> <span class="n">lmbda_high</span>
+
+    <span class="k">while</span> <span class="n">lmbda_high</span> <span class="o">&gt;</span> <span class="n">lmbda_low</span> <span class="o">+</span> <span class="mf">2.0</span> <span class="o">*</span> <span class="n">tolerance</span><span class="p">:</span>
+        <span class="n">lmbda</span> <span class="o">=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">lmbda_low</span> <span class="o">+</span> <span class="n">lmbda_high</span><span class="p">)</span>
+        <span class="n">A</span> <span class="o">=</span> <span class="n">NtN</span> <span class="o">+</span> <span class="n">lmbda</span> <span class="o">*</span> <span class="n">Omega</span>
+        <span class="n">A_solve_NtN</span> <span class="o">=</span> <span class="n">_solve_pos</span><span class="p">(</span><span class="n">A</span><span class="p">,</span> <span class="n">NtN</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">A_solve_NtN</span><span class="o">.</span><span class="n">trace</span><span class="p">()</span> <span class="o">&gt;</span> <span class="n">dof</span><span class="p">:</span>
+            <span class="n">lmbda_low</span> <span class="o">=</span> <span class="n">lmbda</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">lmbda_high</span> <span class="o">=</span> <span class="n">lmbda</span>
+    <span class="k">return</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">lmbda_low</span> <span class="o">+</span> <span class="n">lmbda_high</span><span class="p">)</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">_SplineFeature</span><span class="p">(</span><span class="n">_Feature</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;A cubic-regression-spline feature with a curvature penalty.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">transform</span><span class="p">:</span> <span class="n">Transform</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">rel_dof</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">4.0</span><span class="p">,</span>
+        <span class="n">regularization</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">constraints</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">load_from_file</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Initialize feature model (independent of data).</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        name : str</span>
+<span class="sd">            Name for the feature, used to make plots.</span>
+<span class="sd">        transform : callable, optional</span>
+<span class="sd">            Transformation applied to the data (e.g.</span>
+<span class="sd">            :func:`numpy.log1p`).</span>
+<span class="sd">        rel_dof : float</span>
+<span class="sd">            Relative degrees of freedom for the curvature smoother.</span>
+<span class="sd">        regularization : dict, optional</span>
+<span class="sd">            Optional extra regularization beyond the built-in</span>
+<span class="sd">            curvature penalty.</span>
+
+<span class="sd">            * ``group_lasso`` -- ``{&quot;coef&quot;: lam}``; adds</span>
+<span class="sd">              :math:`\lambda \|N \theta\|_2`, zeroing out the entire</span>
+<span class="sd">              spline contribution once :math:`\lambda` is large</span>
+<span class="sd">              enough.</span>
+<span class="sd">            * ``group_lasso_inf`` -- ``{&quot;coef&quot;: lam}``; adds</span>
+<span class="sd">              :math:`\lambda \|N \theta\|_\infty`, the</span>
+<span class="sd">              :math:`L_\infty` variant. Clips the largest pointwise</span>
+<span class="sd">              contribution rather than applying uniform :math:`L_2`</span>
+<span class="sd">              contraction.</span>
+
+<span class="sd">            The two variants combine additively when both are</span>
+<span class="sd">            specified.</span>
+<span class="sd">        constraints : dict, optional</span>
+<span class="sd">            Optional convex shape constraints on the fitted spline</span>
+<span class="sd">            evaluated at the knots :math:`\xi`. ``lower`` / ``upper``</span>
+<span class="sd">            take floats and bound the spline value. ``sign``</span>
+<span class="sd">            (``&quot;nonnegative&quot;`` or ``&quot;nonpositive&quot;``) is shorthand and</span>
+<span class="sd">            may not combine with ``lower`` / ``upper``. ``monotonic``</span>
+<span class="sd">            (``&quot;increasing&quot;`` or ``&quot;decreasing&quot;``) constrains</span>
+<span class="sd">            consecutive knot values; ``convex`` / ``concave`` bound</span>
+<span class="sd">            the second differences of the knot values. Knots are</span>
+<span class="sd">            sorted, so the constraints are applied along the natural</span>
+<span class="sd">            ordering. Constraint enforcement at the knots is a near-</span>
+<span class="sd">            global proxy for the smooth cubic spline (sufficient in</span>
+<span class="sd">            practice for the intended dose-response / regulated use</span>
+<span class="sd">            cases). Constraints append to the cvxpy program in</span>
+<span class="sd">            :meth:`optimize` -- the closed-form Cholesky path is only</span>
+<span class="sd">            used when no constraints and no group lasso are active.</span>
+<span class="sd">        load_from_file : str, optional</span>
+<span class="sd">            If provided, restore parameters from this pickle path.</span>
+<span class="sd">            All other parameters are ignored when loading.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">__type__</span> <span class="o">=</span> <span class="s2">&quot;spline&quot;</span>
+        <span class="k">if</span> <span class="n">load_from_file</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_load</span><span class="p">(</span><span class="n">load_from_file</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="k">if</span> <span class="n">name</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Feature must have a name.&quot;</span><span class="p">)</span>
+
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span><span class="p">:</span> <span class="nb">bool</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_transform</span><span class="p">:</span> <span class="n">Transform</span>
+        <span class="k">if</span> <span class="n">transform</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_transform</span> <span class="o">=</span> <span class="n">transform</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span> <span class="o">=</span> <span class="kc">False</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_rel_dof</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">rel_dof</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso_inf</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso_inf</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_solver</span> <span class="o">=</span> <span class="s2">&quot;CLARABEL&quot;</span>
+        <span class="k">if</span> <span class="n">regularization</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;group_lasso&quot;</span> <span class="ow">in</span> <span class="n">regularization</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="k">if</span> <span class="s2">&quot;coef&quot;</span> <span class="ow">in</span> <span class="n">regularization</span><span class="p">[</span><span class="s2">&quot;group_lasso&quot;</span><span class="p">]:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">regularization</span><span class="p">[</span><span class="s2">&quot;group_lasso&quot;</span><span class="p">][</span><span class="s2">&quot;coef&quot;</span><span class="p">])</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="s2">&quot;No coefficient specified for group_lasso regularization term.&quot;</span>
+                <span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">regularization</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="s2">&quot;group_lasso_inf&quot;</span> <span class="ow">in</span> <span class="n">regularization</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="k">if</span> <span class="s2">&quot;coef&quot;</span> <span class="ow">in</span> <span class="n">regularization</span><span class="p">[</span><span class="s2">&quot;group_lasso_inf&quot;</span><span class="p">]:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso_inf</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span>
+                    <span class="n">regularization</span><span class="p">[</span><span class="s2">&quot;group_lasso_inf&quot;</span><span class="p">][</span><span class="s2">&quot;coef&quot;</span><span class="p">]</span>
+                <span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="s2">&quot;No coefficient specified for group_lasso_inf regularization term.&quot;</span>
+                <span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_has_constraints</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="o">-</span><span class="n">np</span><span class="o">.</span><span class="n">inf</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">inf</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_monotonic</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_convex</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_concave</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="k">if</span> <span class="n">constraints</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_has_constraints</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">allowed</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;sign&quot;</span><span class="p">,</span> <span class="s2">&quot;lower&quot;</span><span class="p">,</span> <span class="s2">&quot;upper&quot;</span><span class="p">,</span> <span class="s2">&quot;monotonic&quot;</span><span class="p">,</span> <span class="s2">&quot;convex&quot;</span><span class="p">,</span> <span class="s2">&quot;concave&quot;</span><span class="p">}</span>
+            <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">constraints</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">key</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">allowed</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;unknown constraint key </span><span class="si">{</span><span class="n">key</span><span class="si">!r}</span><span class="s2">.&quot;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="s2">&quot;sign&quot;</span> <span class="ow">in</span> <span class="n">constraints</span> <span class="ow">and</span> <span class="p">(</span>
+                <span class="s2">&quot;lower&quot;</span> <span class="ow">in</span> <span class="n">constraints</span> <span class="ow">or</span> <span class="s2">&quot;upper&quot;</span> <span class="ow">in</span> <span class="n">constraints</span>
+            <span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="s2">&quot;constraints: &#39;sign&#39; is shorthand for &#39;lower&#39; / &#39;upper&#39; and &quot;</span>
+                    <span class="s2">&quot;may not be combined with them.&quot;</span>
+                <span class="p">)</span>
+            <span class="k">if</span> <span class="s2">&quot;sign&quot;</span> <span class="ow">in</span> <span class="n">constraints</span><span class="p">:</span>
+                <span class="n">sign</span> <span class="o">=</span> <span class="n">constraints</span><span class="p">[</span><span class="s2">&quot;sign&quot;</span><span class="p">]</span>
+                <span class="k">if</span> <span class="n">sign</span> <span class="o">==</span> <span class="s2">&quot;nonnegative&quot;</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span> <span class="o">=</span> <span class="mf">0.0</span>
+                <span class="k">elif</span> <span class="n">sign</span> <span class="o">==</span> <span class="s2">&quot;nonpositive&quot;</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span> <span class="o">=</span> <span class="mf">0.0</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;constraints[&#39;sign&#39;]: expected &#39;nonnegative&#39; or &quot;</span>
+                        <span class="sa">f</span><span class="s2">&quot;&#39;nonpositive&#39;, got </span><span class="si">{</span><span class="n">sign</span><span class="si">!r}</span><span class="s2">.&quot;</span>
+                    <span class="p">)</span>
+            <span class="k">if</span> <span class="s2">&quot;lower&quot;</span> <span class="ow">in</span> <span class="n">constraints</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">constraints</span><span class="p">[</span><span class="s2">&quot;lower&quot;</span><span class="p">])</span>
+            <span class="k">if</span> <span class="s2">&quot;upper&quot;</span> <span class="ow">in</span> <span class="n">constraints</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">constraints</span><span class="p">[</span><span class="s2">&quot;upper&quot;</span><span class="p">])</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span> <span class="o">&gt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;constraints: lower (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span><span class="si">}</span><span class="s2">) exceeds &quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;upper (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span><span class="si">}</span><span class="s2">).&quot;</span>
+                <span class="p">)</span>
+            <span class="k">if</span> <span class="s2">&quot;convex&quot;</span> <span class="ow">in</span> <span class="n">constraints</span> <span class="ow">and</span> <span class="s2">&quot;concave&quot;</span> <span class="ow">in</span> <span class="n">constraints</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="s2">&quot;constraints: &#39;convex&#39; and &#39;concave&#39; are mutually exclusive.&quot;</span>
+                <span class="p">)</span>
+            <span class="k">if</span> <span class="s2">&quot;monotonic&quot;</span> <span class="ow">in</span> <span class="n">constraints</span><span class="p">:</span>
+                <span class="n">direction</span> <span class="o">=</span> <span class="n">constraints</span><span class="p">[</span><span class="s2">&quot;monotonic&quot;</span><span class="p">]</span>
+                <span class="k">if</span> <span class="n">direction</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">&quot;increasing&quot;</span><span class="p">,</span> <span class="s2">&quot;decreasing&quot;</span><span class="p">}:</span>
+                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                        <span class="sa">f</span><span class="s2">&quot;constraints[&#39;monotonic&#39;]: expected &#39;increasing&#39; or &quot;</span>
+                        <span class="sa">f</span><span class="s2">&quot;&#39;decreasing&#39;, got </span><span class="si">{</span><span class="n">direction</span><span class="si">!r}</span><span class="s2">.&quot;</span>
+                    <span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_monotonic</span> <span class="o">=</span> <span class="n">direction</span>
+            <span class="k">if</span> <span class="n">constraints</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;convex&quot;</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_convex</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="k">if</span> <span class="n">constraints</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;concave&quot;</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_concave</span> <span class="o">=</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">initialize</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">x</span><span class="p">:</span> <span class="n">npt</span><span class="o">.</span><span class="n">NDArray</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+        <span class="n">smoothing</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
+        <span class="n">save_flag</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+        <span class="n">save_prefix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">verbose</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+        <span class="n">covariate_class_sizes</span><span class="p">:</span> <span class="n">npt</span><span class="o">.</span><span class="n">NDArray</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Compute feature-specific state from training data.</span>
+
+<span class="sd">        Selects knot locations from the data (see :func:`_sample`),</span>
+<span class="sd">        builds the basis matrix :math:`N` (see</span>
+<span class="sd">        :func:`_evaluate_spline_basis`), the curvature penalty</span>
+<span class="sd">        :math:`\\Omega` (see :func:`_omega_curvature`), and chooses</span>
+<span class="sd">        the smoothing parameter to hit the requested ``rel_dof``.</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        x : ndarray</span>
+<span class="sd">            Observations corresponding to this feature.</span>
+<span class="sd">        smoothing : float</span>
+<span class="sd">            Multiplicative scale applied to the curvature penalty.</span>
+<span class="sd">        save_flag : bool</span>
+<span class="sd">            If ``True``, save state to disk after initialization.</span>
+<span class="sd">        save_prefix : str, optional</span>
+<span class="sd">            Prefix used to derive the save filename.</span>
+<span class="sd">        verbose : bool</span>
+<span class="sd">            Print mildly helpful information when ``True``.</span>
+<span class="sd">        covariate_class_sizes : ndarray, optional</span>
+<span class="sd">            Unused for spline features; present to satisfy the</span>
+<span class="sd">            :class:`~gamdist.feature._Feature` interface.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_x</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_transform</span><span class="p">(</span><span class="n">x</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_x</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_num_obs</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_x</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_smoothing</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">smoothing</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_verbose</span> <span class="o">=</span> <span class="n">verbose</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_xi</span> <span class="o">=</span> <span class="n">_sample</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_x</span><span class="p">)</span>
+        <span class="n">num_knots</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_verbose</span><span class="p">:</span>
+            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Number of observations: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_num_obs</span><span class="si">:</span><span class="s2">d</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Number of knots: </span><span class="si">{</span><span class="n">num_knots</span><span class="si">:</span><span class="s2">d</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="n">N</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">_num_obs</span><span class="p">,</span> <span class="n">num_knots</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_num_obs</span><span class="p">):</span>
+            <span class="n">N</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="p">:]</span> <span class="o">=</span> <span class="n">_evaluate_spline_basis</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_x</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_N</span> <span class="o">=</span> <span class="n">N</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_NtN</span> <span class="o">=</span> <span class="n">N</span><span class="o">.</span><span class="n">transpose</span><span class="p">()</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">N</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_Omega</span> <span class="o">=</span> <span class="n">_omega_curvature</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+        <span class="c1"># Spline basis evaluated at the knots themselves -- used by shape</span>
+        <span class="c1"># constraints to land at the natural cubic-regression-spline anchor</span>
+        <span class="c1"># points.</span>
+        <span class="n">N_xi</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">num_knots</span><span class="p">,</span> <span class="n">num_knots</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_knots</span><span class="p">):</span>
+            <span class="n">N_xi</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="p">:]</span> <span class="o">=</span> <span class="n">_evaluate_spline_basis</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_N_xi</span> <span class="o">=</span> <span class="n">N_xi</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_theta</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">num_knots</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lmbda</span> <span class="o">=</span> <span class="n">_determine_smoothing</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_NtN</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_Omega</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_rel_dof</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_computed_cho_factor</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_cho_factor</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">FloatArray</span><span class="p">,</span> <span class="nb">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_c</span><span class="p">:</span> <span class="n">FloatArray</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">num_knots</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_w</span><span class="p">:</span> <span class="n">FloatArray</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">num_knots</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_constant</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_smoothing</span> <span class="o">==</span> <span class="mf">1.0</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_dof</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_rel_dof</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">A</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_NtN</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">_smoothing</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lmbda</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_Omega</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_dof</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">_solve_pos</span><span class="p">(</span><span class="n">A</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_NtN</span><span class="p">)</span><span class="o">.</span><span class="n">trace</span><span class="p">())</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso</span> <span class="o">*</span> <span class="n">smoothing</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso_inf</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso_inf</span> <span class="o">*</span> <span class="n">smoothing</span>
+
+        <span class="k">if</span> <span class="n">save_flag</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_save_self</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="k">if</span> <span class="n">save_prefix</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_filename</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="si">}</span><span class="s2">.pckl&quot;</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_filename</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">save_prefix</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="si">}</span><span class="s2">.pckl&quot;</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_save</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_filename</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_save_self</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_save</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Save parameters so model fitting can be continued later.&quot;&quot;&quot;</span>
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">_filename</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="n">mv</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="p">,</span>
+            <span class="s2">&quot;has_transform&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span><span class="p">,</span>
+            <span class="s2">&quot;rel_dof&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_rel_dof</span><span class="p">,</span>
+            <span class="s2">&quot;x&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_x</span><span class="p">,</span>
+            <span class="s2">&quot;num_obs&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_num_obs</span><span class="p">,</span>
+            <span class="s2">&quot;smoothing&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_smoothing</span><span class="p">,</span>
+            <span class="s2">&quot;verbose&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_verbose</span><span class="p">,</span>
+            <span class="s2">&quot;xi&quot;</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">),</span>
+            <span class="s2">&quot;N&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="p">,</span>
+            <span class="s2">&quot;N_xi&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_N_xi</span><span class="p">,</span>
+            <span class="s2">&quot;NtN&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_NtN</span><span class="p">,</span>
+            <span class="s2">&quot;Omega&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_Omega</span><span class="p">,</span>
+            <span class="s2">&quot;theta&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_theta</span><span class="p">,</span>
+            <span class="s2">&quot;lmbda&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lmbda</span><span class="p">,</span>
+            <span class="s2">&quot;computed_cho_factor&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_computed_cho_factor</span><span class="p">,</span>
+            <span class="s2">&quot;cho_factor&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cho_factor</span><span class="p">,</span>
+            <span class="s2">&quot;dof&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dof</span><span class="p">,</span>
+            <span class="s2">&quot;save_self&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_save_self</span><span class="p">,</span>
+            <span class="s2">&quot;has_group_lasso&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span><span class="p">,</span>
+            <span class="s2">&quot;has_group_lasso_inf&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span><span class="p">,</span>
+            <span class="s2">&quot;solver&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_solver</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span><span class="p">:</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;transform&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_transform</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span><span class="p">:</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;coef_group_lasso&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;lambda_group_lasso&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span><span class="p">:</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;coef_group_lasso_inf&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso_inf</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;lambda_group_lasso_inf&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso_inf</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_constraints</span><span class="p">:</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;has_constraints&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_lower&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_upper&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_monotonic&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_monotonic</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_convex&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_convex</span>
+            <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_concave&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_concave</span>
+
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_filename</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+            <span class="n">pickle</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">mv</span><span class="p">,</span> <span class="n">f</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_load</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filename</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Load parameters from a previous model fitting session.&quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">filename</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+            <span class="n">mv</span> <span class="o">=</span> <span class="n">pickle</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_filename</span> <span class="o">=</span> <span class="n">filename</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_name</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;name&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;has_transform&quot;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_transform</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;transform&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_rel_dof</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;rel_dof&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_x</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_num_obs</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;num_obs&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_smoothing</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;smoothing&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_verbose</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;verbose&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_xi</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;xi&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_N</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;N&quot;</span><span class="p">]</span>
+        <span class="c1"># N_xi added alongside constraints; recover for older pickles by</span>
+        <span class="c1"># rebuilding from the persisted knots.</span>
+        <span class="k">if</span> <span class="s2">&quot;N_xi&quot;</span> <span class="ow">in</span> <span class="n">mv</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_N_xi</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;N_xi&quot;</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">xi</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+            <span class="n">num_knots</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">xi</span><span class="p">)</span>
+            <span class="n">N_xi</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">num_knots</span><span class="p">,</span> <span class="n">num_knots</span><span class="p">))</span>
+            <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_knots</span><span class="p">):</span>
+                <span class="n">N_xi</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="p">:]</span> <span class="o">=</span> <span class="n">_evaluate_spline_basis</span><span class="p">(</span><span class="n">xi</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="n">xi</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_N_xi</span> <span class="o">=</span> <span class="n">N_xi</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_NtN</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;NtN&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_Omega</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;Omega&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_theta</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;theta&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lmbda</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;lmbda&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_computed_cho_factor</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;computed_cho_factor&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_cho_factor</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;cho_factor&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dof</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;dof&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_save_self</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;save_self&quot;</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_c</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_w</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_constant</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="c1"># has_group_lasso / solver added later; default for older pickles.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span> <span class="o">=</span> <span class="n">mv</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;has_group_lasso&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_solver</span> <span class="o">=</span> <span class="n">mv</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;solver&quot;</span><span class="p">,</span> <span class="s2">&quot;CLARABEL&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;coef_group_lasso&quot;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;lambda_group_lasso&quot;</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso</span> <span class="o">=</span> <span class="mf">0.0</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="c1"># has_group_lasso_inf added later; default for older pickles.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span> <span class="o">=</span> <span class="n">mv</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;has_group_lasso_inf&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso_inf</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;coef_group_lasso_inf&quot;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso_inf</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;lambda_group_lasso_inf&quot;</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_coef_group_lasso_inf</span> <span class="o">=</span> <span class="mf">0.0</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso_inf</span> <span class="o">=</span> <span class="mf">0.0</span>
+        <span class="c1"># has_constraints added later; default to False for older pickles.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_has_constraints</span> <span class="o">=</span> <span class="n">mv</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;has_constraints&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_constraints</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_lower&quot;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_upper&quot;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_monotonic</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_monotonic&quot;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_convex</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_convex&quot;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_concave</span> <span class="o">=</span> <span class="n">mv</span><span class="p">[</span><span class="s2">&quot;constraint_concave&quot;</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span> <span class="o">=</span> <span class="o">-</span><span class="n">np</span><span class="o">.</span><span class="n">inf</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">inf</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_monotonic</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_convex</span> <span class="o">=</span> <span class="kc">False</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_concave</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">optimize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fpumz</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">,</span> <span class="n">rho</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FloatArray</span><span class="p">:</span>
+<span class="w">        </span><span class="sa">r</span><span class="sd">&quot;&quot;&quot;Solve the per-feature primal step.</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        fpumz : ndarray of shape ``(m,)``</span>
+<span class="sd">            Vector representing :math:`\bar{f}^k + u^k - \bar{z}^k`.</span>
+<span class="sd">        rho : float</span>
+<span class="sd">            ADMM parameter. Must be positive.</span>
+
+<span class="sd">        Returns</span>
+<span class="sd">        -------</span>
+<span class="sd">        fkp1 : ndarray of shape ``(m,)``</span>
+<span class="sd">            This feature&#39;s contribution to the response.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_constraints</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_theta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_optimize_cvx</span><span class="p">(</span><span class="n">fpumz</span><span class="p">,</span> <span class="n">rho</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_theta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_optimize_chol</span><span class="p">(</span><span class="n">fpumz</span><span class="p">,</span> <span class="n">rho</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_save_self</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_save</span><span class="p">()</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_theta</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_optimize_chol</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fpumz</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">,</span> <span class="n">rho</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FloatArray</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Closed-form Cholesky-based primal step (no group lasso).&quot;&quot;&quot;</span>
+        <span class="n">y</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_theta</span><span class="p">)</span> <span class="o">-</span> <span class="n">fpumz</span>
+        <span class="n">Nty</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="o">.</span><span class="n">transpose</span><span class="p">()</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">y</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_computed_cho_factor</span><span class="p">:</span>
+            <span class="n">nu</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_smoothing</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lmbda</span> <span class="o">/</span> <span class="n">rho</span>
+            <span class="n">A</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_NtN</span> <span class="o">+</span> <span class="n">nu</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_Omega</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_cho_factor</span> <span class="o">=</span> <span class="n">la</span><span class="o">.</span><span class="n">cho_factor</span><span class="p">(</span><span class="n">A</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_c</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_w</span> <span class="o">=</span> <span class="n">la</span><span class="o">.</span><span class="n">cho_solve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_cho_factor</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_c</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_constant</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="nb">float</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_c</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_w</span><span class="p">))</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_computed_cho_factor</span> <span class="o">=</span> <span class="kc">True</span>
+
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cho_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="n">theta_wc</span> <span class="o">=</span> <span class="n">la</span><span class="o">.</span><span class="n">cho_solve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_cho_factor</span><span class="p">,</span> <span class="n">Nty</span><span class="p">,</span> <span class="n">check_finite</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">theta_wc</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constant</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_c</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">theta_wc</span><span class="p">)</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_w</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_optimize_cvx</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fpumz</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">,</span> <span class="n">rho</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FloatArray</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Primal step via cvxpy when a group_lasso term is present.</span>
+
+<span class="sd">        Group lasso on the per-feature contribution f_j = N theta penalizes</span>
+<span class="sd">        ``λ · ||N θ||₂`` (or ``λ · ||N θ||_∞`` for the L_inf variant), both</span>
+<span class="sd">        of which are non-smooth at zero and break the closed-form Cholesky</span>
+<span class="sd">        path. The fast path is used whenever neither variant is active, so</span>
+<span class="sd">        this branch only runs when needed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">target</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_theta</span><span class="p">)</span> <span class="o">-</span> <span class="n">fpumz</span>
+        <span class="n">K</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_theta</span><span class="p">)</span>
+        <span class="n">nu</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_smoothing</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lmbda</span> <span class="o">/</span> <span class="n">rho</span>
+        <span class="n">gamma</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso</span> <span class="o">/</span> <span class="n">rho</span>
+        <span class="n">gamma_inf</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lambda_group_lasso_inf</span> <span class="o">/</span> <span class="n">rho</span>
+
+        <span class="n">theta_var</span> <span class="o">=</span> <span class="n">cvx</span><span class="o">.</span><span class="n">Variable</span><span class="p">(</span><span class="n">K</span><span class="p">)</span>
+        <span class="n">N_const</span> <span class="o">=</span> <span class="n">cvx</span><span class="o">.</span><span class="n">Constant</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="p">)</span>
+        <span class="n">Omega_const</span> <span class="o">=</span> <span class="n">cvx</span><span class="o">.</span><span class="n">psd_wrap</span><span class="p">(</span><span class="n">cvx</span><span class="o">.</span><span class="n">Constant</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_Omega</span><span class="p">))</span>
+        <span class="n">c_vec</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+
+        <span class="n">obj</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="n">cvx</span><span class="o">.</span><span class="n">sum_squares</span><span class="p">(</span>
+            <span class="n">N_const</span> <span class="o">@</span> <span class="n">theta_var</span> <span class="o">-</span> <span class="n">cvx</span><span class="o">.</span><span class="n">Constant</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+        <span class="p">)</span> <span class="o">+</span> <span class="n">nu</span> <span class="o">*</span> <span class="n">cvx</span><span class="o">.</span><span class="n">quad_form</span><span class="p">(</span><span class="n">theta_var</span><span class="p">,</span> <span class="n">Omega_const</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso</span><span class="p">:</span>
+            <span class="n">obj</span> <span class="o">=</span> <span class="n">obj</span> <span class="o">+</span> <span class="n">gamma</span> <span class="o">*</span> <span class="n">cvx</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">N_const</span> <span class="o">@</span> <span class="n">theta_var</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_group_lasso_inf</span><span class="p">:</span>
+            <span class="n">obj</span> <span class="o">=</span> <span class="n">obj</span> <span class="o">+</span> <span class="n">gamma_inf</span> <span class="o">*</span> <span class="n">cvx</span><span class="o">.</span><span class="n">norm_inf</span><span class="p">(</span><span class="n">N_const</span> <span class="o">@</span> <span class="n">theta_var</span><span class="p">)</span>
+        <span class="n">constraints</span> <span class="o">=</span> <span class="p">[</span><span class="n">cvx</span><span class="o">.</span><span class="n">Constant</span><span class="p">(</span><span class="n">c_vec</span><span class="p">)</span> <span class="o">@</span> <span class="n">theta_var</span> <span class="o">==</span> <span class="mi">0</span><span class="p">]</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_constraints</span><span class="p">:</span>
+            <span class="c1"># Shape constraints land on the spline value evaluated at the knots</span>
+            <span class="c1"># (the natural sequence for cubic regression splines). f_xi[i] is</span>
+            <span class="c1"># spline(xi_i); pinning these gives near-global shape control on a</span>
+            <span class="c1"># smooth cubic.</span>
+            <span class="n">f_xi</span> <span class="o">=</span> <span class="n">cvx</span><span class="o">.</span><span class="n">Constant</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_N_xi</span><span class="p">)</span> <span class="o">@</span> <span class="n">theta_var</span>
+            <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span><span class="p">):</span>
+                <span class="n">constraints</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">f_xi</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_lower</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span><span class="p">):</span>
+                <span class="n">constraints</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">f_xi</span> <span class="o">&lt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_upper</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_monotonic</span> <span class="o">==</span> <span class="s2">&quot;increasing&quot;</span><span class="p">:</span>
+                <span class="n">constraints</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cvx</span><span class="o">.</span><span class="n">diff</span><span class="p">(</span><span class="n">f_xi</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">)</span>
+            <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_monotonic</span> <span class="o">==</span> <span class="s2">&quot;decreasing&quot;</span><span class="p">:</span>
+                <span class="n">constraints</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cvx</span><span class="o">.</span><span class="n">diff</span><span class="p">(</span><span class="n">f_xi</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_convex</span><span class="p">:</span>
+                <span class="n">constraints</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cvx</span><span class="o">.</span><span class="n">diff</span><span class="p">(</span><span class="n">f_xi</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constraint_concave</span><span class="p">:</span>
+                <span class="n">constraints</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cvx</span><span class="o">.</span><span class="n">diff</span><span class="p">(</span><span class="n">f_xi</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">)</span>
+        <span class="n">prob</span> <span class="o">=</span> <span class="n">cvx</span><span class="o">.</span><span class="n">Problem</span><span class="p">(</span><span class="n">cvx</span><span class="o">.</span><span class="n">Minimize</span><span class="p">(</span><span class="n">obj</span><span class="p">),</span> <span class="n">constraints</span><span class="p">)</span>
+        <span class="c1"># cvxpy&#39;s &quot;Solution may be inaccurate&quot; UserWarning escapes the</span>
+        <span class="c1"># cvxpy.* module filter (cvxpy attributes it to the caller via</span>
+        <span class="c1"># stacklevel walking). We accept OPTIMAL_INACCURATE explicitly</span>
+        <span class="c1"># below, so suppress the noise here.</span>
+        <span class="k">with</span> <span class="n">warnings</span><span class="o">.</span><span class="n">catch_warnings</span><span class="p">():</span>
+            <span class="n">warnings</span><span class="o">.</span><span class="n">filterwarnings</span><span class="p">(</span>
+                <span class="s2">&quot;ignore&quot;</span><span class="p">,</span> <span class="n">message</span><span class="o">=</span><span class="s2">&quot;Solution may be inaccurate&quot;</span><span class="p">,</span> <span class="n">category</span><span class="o">=</span><span class="ne">UserWarning</span>
+            <span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">prob</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">verbose</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_verbose</span><span class="p">,</span> <span class="n">solver</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_solver</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">cvx</span><span class="o">.</span><span class="n">SolverError</span><span class="p">:</span>
+                <span class="c1"># Constrained sub-problems (especially convex / concave shape</span>
+                <span class="c1"># constraints across many knots) can hit CLARABEL&#39;s numerical</span>
+                <span class="c1"># tolerance with a sum_squares + curvature-penalty + many</span>
+                <span class="c1"># inequality constraints structure. SCS is a first-order</span>
+                <span class="c1"># solver that handles the ill-conditioning, so fall back to it</span>
+                <span class="c1"># when the default fails.</span>
+                <span class="n">prob</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">verbose</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_verbose</span><span class="p">,</span> <span class="n">solver</span><span class="o">=</span><span class="s2">&quot;SCS&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">prob</span><span class="o">.</span><span class="n">status</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="n">cvx</span><span class="o">.</span><span class="n">OPTIMAL</span><span class="p">,</span> <span class="n">cvx</span><span class="o">.</span><span class="n">OPTIMAL_INACCURATE</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Spline feature </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="si">!r}</span><span class="s2"> failed to converge &quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;(status=</span><span class="si">{</span><span class="n">prob</span><span class="o">.</span><span class="n">status</span><span class="si">!r}</span><span class="s2">).&quot;</span>
+            <span class="p">)</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="n">theta_var</span><span class="o">.</span><span class="n">value</span>
+        <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Spline feature </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="si">!r}</span><span class="s2"> produced no solution.&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span><span class="o">.</span><span class="n">ravel</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">compute_dual_tol</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">y</span><span class="p">:</span> <span class="n">FloatArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Compute this feature&#39;s contribution to the dual residual tolerance.&quot;&quot;&quot;</span>
+        <span class="n">Aty</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_N</span><span class="o">.</span><span class="n">transpose</span><span class="p">()</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">y</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">Aty</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">Aty</span><span class="p">))</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">num_params</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Number of parameters in this feature.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_theta</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">dof</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Effective degrees of freedom contributed by this feature.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_dof</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">predict</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">X</span><span class="p">:</span> <span class="n">npt</span><span class="o">.</span><span class="n">NDArray</span><span class="p">[</span><span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">FloatArray</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Apply fitted model to feature.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_transform</span><span class="p">:</span>
+            <span class="n">xx</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_transform</span><span class="p">(</span><span class="n">X</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">xx</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+
+        <span class="n">num_obs</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">xx</span><span class="p">)</span>
+        <span class="n">num_knots</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+        <span class="n">N</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">num_obs</span><span class="p">,</span> <span class="n">num_knots</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_obs</span><span class="p">):</span>
+            <span class="n">N</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="p">:]</span> <span class="o">=</span> <span class="n">_evaluate_spline_basis</span><span class="p">(</span><span class="n">xx</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">N</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_theta</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_plot</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">true_fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">FloatArray</span><span class="p">],</span> <span class="n">FloatArray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Plot the fitted spline against an optional true function.&quot;&quot;&quot;</span>
+        <span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+
+        <span class="n">num_obs</span> <span class="o">=</span> <span class="mi">100</span>
+        <span class="n">x_plot</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_x</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_x</span><span class="p">),</span> <span class="n">num</span><span class="o">=</span><span class="n">num_obs</span><span class="p">)</span>
+
+        <span class="n">num_knots</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+        <span class="n">N</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">num_obs</span><span class="p">,</span> <span class="n">num_knots</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_obs</span><span class="p">):</span>
+            <span class="n">N</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="p">:]</span> <span class="o">=</span> <span class="n">_evaluate_spline_basis</span><span class="p">(</span><span class="n">x_plot</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">_xi</span><span class="p">)</span>
+
+        <span class="n">y_hat</span> <span class="o">=</span> <span class="n">N</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_theta</span><span class="p">)</span>
+
+        <span class="n">A</span> <span class="o">=</span> <span class="n">N</span><span class="o">.</span><span class="n">transpose</span><span class="p">()</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">N</span><span class="p">)</span> <span class="o">+</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_smoothing</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lmbda</span><span class="p">)</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_Omega</span>
+        <span class="n">S</span> <span class="o">=</span> <span class="n">_solve_pos</span><span class="p">(</span><span class="n">A</span><span class="p">,</span> <span class="n">N</span><span class="o">.</span><span class="n">transpose</span><span class="p">())</span>
+        <span class="n">se</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">num_obs</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_obs</span><span class="p">):</span>
+            <span class="n">se</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">la</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">N</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="p">:]</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">S</span><span class="p">))</span>
+        <span class="n">ub</span> <span class="o">=</span> <span class="n">y_hat</span> <span class="o">+</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">se</span>
+        <span class="n">lb</span> <span class="o">=</span> <span class="n">y_hat</span> <span class="o">-</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">se</span>
+
+        <span class="n">fig</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">figure</span><span class="p">()</span>
+        <span class="n">ax</span> <span class="o">=</span> <span class="n">fig</span><span class="o">.</span><span class="n">add_subplot</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+        <span class="n">ax</span><span class="o">.</span><span class="n">fill_between</span><span class="p">(</span><span class="n">x_plot</span><span class="p">,</span> <span class="n">lb</span><span class="p">,</span> <span class="n">ub</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">&quot;y&quot;</span><span class="p">)</span>
+        <span class="n">ax</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">x_plot</span><span class="p">,</span> <span class="n">y_hat</span><span class="p">,</span> <span class="s2">&quot;g-&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">true_fn</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">y_true</span> <span class="o">=</span> <span class="n">true_fn</span><span class="p">(</span><span class="n">x_plot</span><span class="p">)</span>
+            <span class="n">ax</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">x_plot</span><span class="p">,</span> <span class="n">y_true</span><span class="p">,</span> <span class="s2">&quot;k--&quot;</span><span class="p">)</span>
+        <span class="n">plt</span><span class="o">.</span><span class="n">xlabel</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="p">,</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">24</span><span class="p">)</span>
+        <span class="n">plt</span><span class="o">.</span><span class="n">ylabel</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;f_</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">24</span><span class="p">)</span>
+        <span class="n">plt</span><span class="o">.</span><span class="n">title</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;df_lambda = </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_dof</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">24</span><span class="p">)</span>
+        <span class="n">plt</span><span class="o">.</span><span class="n">gcf</span><span class="p">()</span><span class="o">.</span><span class="n">subplots_adjust</span><span class="p">(</span><span class="n">bottom</span><span class="o">=</span><span class="mf">0.15</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;MPLBACKEND&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">&quot;Agg&quot;</span><span class="p">,</span> <span class="s2">&quot;agg&quot;</span><span class="p">}:</span>
+            <span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>  <span class="c1"># pragma: no cover</span>
+        <span class="n">plt</span><span class="o">.</span><span class="n">close</span><span class="p">(</span><span class="n">fig</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Feature </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="si">}</span><span class="s2"> (spline): </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_dof</span><span class="si">:</span><span class="s2">0.0f</span><span class="si">}</span><span class="s2"> dof</span><span class="se">\n</span><span class="s2">&quot;</span>
+</pre></div>
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="../../index.html">gamdist</a></h1>
+
+
+
+
+
+
+
+
+
+<search id="searchbox" style="display: none" role="search">
+    <div class="searchformwrapper">
+    <form class="search" action="../../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Search"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script><h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../code.html">Documentation for gamdist</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../../index.html">Documentation overview</a><ul>
+  <li><a href="../index.html">Module code</a><ul>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &#169;2017-2026, Bob Wilson.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 9.1.0</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 1.0.0</a>
+      
+    </div>
+
+    
+
+    
+  </body>
+</html>
