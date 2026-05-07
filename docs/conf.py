@@ -47,4 +47,8 @@ autodoc_member_order = "bysource"
 
 # -- Options for HTML output -------------------------------------------------
 
-html_theme = "alabaster"
+html_theme = "pydata_sphinx_theme"
+html_theme_options = {
+    "github_url": "https://github.com/rwilson4/gamdist",
+    "show_prev_next": False,
+}

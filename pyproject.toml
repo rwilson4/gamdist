@@ -38,6 +38,7 @@ dev = [
     "ruff>=0.5",
     "pandas-stubs",
     "sphinx>=7.0",
+    "pydata-sphinx-theme>=0.17.1",
 ]
 
 [project.urls]
