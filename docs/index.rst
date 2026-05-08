@@ -68,6 +68,7 @@ the ADMM framework of [BPC11]_.
    :maxdepth: 2
    :caption: Contents:
 
+   user_guides/index
    api.rst
    references.rst
 
