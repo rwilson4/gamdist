@@ -1,5 +1,5 @@
 [project]
-name = "gamdist"
+name = "gamdist-py"
 version = "0.2.0"
 description = "Generalized Additive Models fit via ADMM"
 readme = "README.md"
