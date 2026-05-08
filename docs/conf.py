@@ -21,7 +21,7 @@ copyright = "2017-2026, Bob Wilson"
 author = "Bob Wilson"
 
 # The full version, including alpha/beta/rc tags
-release = _get_version("gamdist")
+release = _get_version("gamdist-py")
 
 
 # -- General configuration ---------------------------------------------------

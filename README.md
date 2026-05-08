@@ -46,7 +46,13 @@ the model needs to change.
 
 ## Install
 
-Requires Python 3.11+. With [uv][uv]:
+Requires Python 3.11+.
+
+```bash
+pip install gamdist-py
+```
+
+For development, clone the repo and use [uv][uv]:
 
 ```bash
 uv sync                  # runtime deps
