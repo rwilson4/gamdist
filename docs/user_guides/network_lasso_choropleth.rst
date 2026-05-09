@@ -150,7 +150,9 @@ Fitting the GAM
 
 The model has a single feature --- ``county_id``, treated as a
 categorical with network-lasso regularization. The ``regularization``
-dict pairs the coefficient :math:`\lambda` with the edge list:
+dict pairs the coefficient :math:`\lambda` with the edge list. We start
+from :math:`\lambda = 0.25`, which a moment of GCV-driven tuning (next
+section) will confirm is a good default for this dataset:
 
 .. code-block:: python
 
@@ -160,21 +162,21 @@ dict pairs the coefficient :math:`\lambda` with the edge list:
     mdl.add_feature(
         name='county_id',
         type='categorical',
-        regularization={'network_lasso': {'coef': 0.1, 'edges': edges}},
+        regularization={'network_lasso': {'coef': 0.25, 'edges': edges}},
     )
     mdl.fit(obs[['county_id']], obs['log_income'].to_numpy())
 
     mdl.summary()
     # Model Statistics
     # ----------------
-    # phi: 0.0957
-    # edof: 159
-    # Deviance: 60.9
-    # AIC: 956
-    # AICc: 1037
-    # BIC: 1705
-    # R^2: 0.455
-    # GCV: 0.120
+    # phi: 0.0890
+    # edof: 51
+    # Deviance: 66.2
+    # AIC: 848
+    # AICc: 855
+    # BIC: 1091
+    # R^2: 0.408
+    # GCV: 0.0951
 
 The fitted county effects --- one per category --- are obtained by
 calling :meth:`~gamdist.GAM.predict` with a one-row-per-county
@@ -184,12 +186,12 @@ DataFrame:
 
     counties['fitted_log_income'] = mdl.predict(counties[['county_id']])
 
-Note on ``edof``: gamdist currently counts every category as a separate
-parameter, so the reported effective degrees of freedom (159 here) does
-not yet reflect the fusion the network lasso induces. The fit itself
-collapses many neighbors to identical values, as the next section
-shows; the AIC / BIC numbers should therefore be read as upper bounds
-on the model's true complexity.
+The reported effective degrees of freedom (51) is much smaller than the
+159 categories: the network lasso has fused most neighboring counties
+to identical coefficients, and ``edof`` reflects the actual number of
+distinct fitted values rather than the unconstrained category count.
+That correctly-shrunk ``edof`` is what allows the AIC, BIC, and GCV
+numbers above to be compared meaningfully across :math:`\lambda` values.
 
 Drawing the choropleth
 ----------------------
@@ -223,9 +225,10 @@ the panels are directly comparable:
    :align: center
 
    Network-lasso smoothing of a simulated per-county survey of log
-   median household income. The middle panel collapses 159 counties to
-   ~105 distinct values; many internal boundaries disappear as
-   neighbors fuse to identical coefficients.
+   median household income at the GCV-optimal :math:`\lambda = 0.25`.
+   The middle panel collapses 159 counties to 50 distinct fitted
+   values; most internal boundaries disappear as neighbors fuse to
+   identical coefficients.
 
 The left panel is mottled --- noise dominates the per-county means.
 The middle panel shows the smoothed estimate: most county boundaries
@@ -243,11 +246,14 @@ The single tuning knob is :math:`\lambda` (passed as ``coef``). At
 county gets its own free coefficient (= the per-county sample mean,
 modulo the implicit zero-sum centering). As :math:`\lambda \to \infty`
 all coefficients along any connected component of the graph collapse
-to the same value. Sweeping a few values illustrates the behavior:
+to the same value. The principled way to choose :math:`\lambda` is to
+minimize **generalized cross-validation** (GCV), an efficient
+leave-one-out CV approximation reported by :meth:`~gamdist.GAM.summary`
+on every fit:
 
 .. code-block:: python
 
-    for lam in [0.001, 0.01, 0.1, 1.0]:
+    for lam in [0.001, 0.05, 0.1, 0.25, 0.5, 1.0]:
         mdl_l = GAM(family='normal')
         mdl_l.add_feature(
             name='county_id', type='categorical',
@@ -255,28 +261,42 @@ to the same value. Sweeping a few values illustrates the behavior:
         )
         mdl_l.fit(obs[['county_id']], obs['log_income'].to_numpy())
         fit = mdl_l.predict(counties[['county_id']])
-        rmse = np.sqrt(np.mean((fit - counties['true_log_income']) ** 2))
         n_unique = np.unique(np.round(fit, 4)).size
-        print(f'lambda={lam:>6}: RMSE-vs-truth={rmse:.4f}'
-              f'  unique levels={n_unique:3d}')
+        print(f'lambda={lam:>6}: edof={mdl_l.dof():>5.1f}'
+              f'  GCV={mdl_l.gcv():.4f}  unique levels={n_unique:3d}')
 
-    # lambda= 0.001: RMSE-vs-truth=0.1292  unique levels=157
-    # lambda=  0.01: RMSE-vs-truth=0.1242  unique levels=152
-    # lambda=   0.1: RMSE-vs-truth=0.0864  unique levels=105
-    # lambda=   1.0: RMSE-vs-truth=0.1103  unique levels= 11
+    # lambda= 0.001: edof=159.0  GCV=0.1146  unique levels=157
+    # lambda=  0.05: edof=124.0  GCV=0.1044  unique levels=123
+    # lambda=   0.1: edof=106.0  GCV=0.1020  unique levels=105
+    # lambda=  0.25: edof= 51.0  GCV=0.0951  unique levels= 50
+    # lambda=   0.5: edof= 34.0  GCV=0.0981  unique levels= 34
+    # lambda=   1.0: edof= 11.0  GCV=0.1009  unique levels= 11
 
-For reference, the raw per-county sample means already attain
-RMSE :math:`\approx 0.130`. A negligible :math:`\lambda` barely
-improves on that --- nearly every county still has its own value
-(157 distinct levels out of 159). At :math:`\lambda = 0.1` the
-fit collapses to 105 distinct levels and the error drops by a
-third. Push :math:`\lambda` to 1.0 and the network lasso has carved
-the state into just 11 large regions: a clearer summary, but now
-over-smoothed in places that the truth is genuinely heterogeneous.
+GCV bottoms out near :math:`\lambda = 0.25`, where the network lasso
+has fused Georgia's 159 counties into 50 contiguous regions of
+constant value. A negligible :math:`\lambda` leaves nearly every
+county with its own value (157 distinct levels out of 159) and the
+fit barely improves on the raw per-county sample means. Push
+:math:`\lambda` to 1.0 and the state is carved into 11 large regions:
+a clearer summary, but now over-smoothed where the truth is genuinely
+heterogeneous.
 
-In practice you would pick :math:`\lambda` by minimizing GCV (reported
-in :meth:`~gamdist.GAM.summary`) or by holding out part of the data,
-exactly as you would tune any other regularization coefficient.
+The ``edof`` column makes this concrete: it is the number of
+*independent* coefficients the fit is actually using, after fusion.
+For ``network_lasso`` :meth:`~gamdist.GAM.dof` counts distinct fitted
+values rather than the unconstrained category count, so
+:math:`\lambda = 0.25` and :math:`\lambda = 0.5` both report ``edof``
+that is far below 159 even though every county still has a (fused)
+prediction. That is what makes GCV --- which weights the deviance by
+:math:`(1 - \mathrm{edof}/n)^{-2}` --- a usable model-selection
+criterion here.
+
+For a tighter optimum, sweep more :math:`\lambda` values around the
+minimum and pick the one with the smallest GCV. Holding out part of
+the data and choosing :math:`\lambda` by validation deviance gives the
+same answer up to noise, and is the standard fallback when you mistrust
+the GCV approximation (e.g., for very small samples or non-Gaussian
+families with a fixed dispersion).
 
 When to reach for ``network_lasso``
 -----------------------------------
