@@ -17,6 +17,24 @@
 - Wired the new guide into docs/user_guides/index.rst between the
   getting-started and network-lasso choropleth guides.
 
+2026-05-09 : Intersperse residual diagnostics figures in the evaluating-fit guide (#5)
+- Replaced the single composite figure at the bottom of
+  docs/user_guides/evaluating_fit.rst with four section-local figures
+  embedded next to the calls that produce them. Specifically:
+  ``evaluating_fit_mdl3_diagnostics.png`` (the canonical
+  ``plot_residuals()`` output) appears in *Residuals vs. fitted, and
+  the QQ plot*; ``evaluating_fit_mdl3_vs_walkability.png`` (a clean
+  cloud showing what an in-the-model predictor looks like) appears in
+  *Residuals vs. a predictor*; and ``evaluating_fit_mdl1_vs_neighborhood.png``
+  / ``evaluating_fit_mdl2_vs_walkability.png`` appear inline in the
+  diagnose-and-fix cycle alongside the ``plot_residuals_vs_predictor``
+  calls that motivate them.
+- Added a small worked example in *Residuals vs. a predictor* using
+  ``mdl3.plot_residuals_vs_predictor(X['walkability'])`` so the
+  section has a concrete call to anchor the embedded figure.
+- docs/_static/render_evaluating_fit.py rewritten to emit the four
+  PNGs (the previous composite ``evaluating_fit.png`` is removed).
+
 2026-05-09 : Regularization-aware effective dof on linear and spline features (#79)
 - Closes the linear / spline slice of #79. Both features previously
   reported a constant dof regardless of regularization; now:
