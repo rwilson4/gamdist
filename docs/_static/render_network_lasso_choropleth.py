@@ -58,8 +58,7 @@ def main() -> None:
             obs_rows.append(
                 {
                     "county_id": row["county_id"],
-                    "log_income": row["true_log_income"]
-                    + rng.normal(0, 0.30),
+                    "log_income": row["true_log_income"] + rng.normal(0, 0.30),
                 }
             )
     obs = pd.DataFrame(obs_rows)
@@ -71,7 +70,7 @@ def main() -> None:
     mdl.add_feature(
         name="county_id",
         type="categorical",
-        regularization={"network_lasso": {"coef": 0.1, "edges": edges}},
+        regularization={"network_lasso": {"coef": 0.25, "edges": edges}},
     )
     mdl.fit(obs[["county_id"]], obs["log_income"].to_numpy())
     counties["fitted_log_income"] = mdl.predict(counties[["county_id"]])
@@ -95,9 +94,7 @@ def main() -> None:
         ax.set_axis_off()
         ax.set_title(title, fontsize=11)
 
-    sm = plt.cm.ScalarMappable(
-        cmap="viridis", norm=plt.Normalize(vmin=vmin, vmax=vmax)
-    )
+    sm = plt.cm.ScalarMappable(cmap="viridis", norm=plt.Normalize(vmin=vmin, vmax=vmax))
     cbar = fig.colorbar(
         sm, ax=axes, orientation="horizontal", fraction=0.04, pad=0.04, shrink=0.6
     )

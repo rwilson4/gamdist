@@ -1,3 +1,20 @@
+2026-05-09 : Network-lasso choropleth guide refreshed for the new edof
+- Updated docs/user_guides/network_lasso_choropleth.rst to reflect the
+  regularization-aware ``dof()`` from #79/#82. Headline lambda moved
+  from 0.1 (visually under-smoothed, edof previously pinned at 159) to
+  the GCV-optimal lambda = 0.25 (edof = 51, ~50 fused regions).
+  Regenerated the inline ``mdl.summary()`` printout, dropped the
+  "Note on edof" caveat, and rewrote the "Choosing the smoothing
+  strength" section around GCV instead of RMSE-vs-truth (the new dof
+  makes GCV usable; pre-fix GCV was monotone-decreasing in lambda and
+  picked the smallest value on offer).
+- Re-rendered docs/_static/network_lasso_choropleth.png at the new
+  lambda; the middle panel now shows the heavier fusion (50 regions
+  vs the previous 105) that the prose describes. Updated the figure
+  caption accordingly.
+- docs/_static/render_network_lasso_choropleth.py uses the new
+  lambda so the figure is reproducible.
+
 2026-05-09 : Regularization-aware effective dof on _CategoricalFeature (#79)
 - Replaced _CategoricalFeature.dof()'s constant ``len(self.p) - 1`` with a
   regularization-aware formula that reflects the *fitted* coefficient
