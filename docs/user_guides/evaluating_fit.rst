@@ -178,6 +178,18 @@ Residuals vs. fitted, and the QQ plot
 
     fig = mdl3.plot_residuals()    # kind="deviance" by default
 
+.. figure:: ../_static/evaluating_fit_mdl3_diagnostics.png
+   :alt: Two-panel diagnostic for mdl3. Left: deviance residuals
+         plotted against fitted values, showing a featureless cloud
+         centered on zero. Right: a normal Q-Q plot of the same
+         residuals, falling on the reference line.
+   :align: center
+
+   Output of ``mdl3.plot_residuals()``: a featureless residual cloud
+   on the left, and a Q-Q plot that tracks the reference line on the
+   right. Both panels indicate the model has captured the systematic
+   structure and that the Gaussian family is appropriate.
+
 What you want to see:
 
 - The left panel (residuals vs. :math:`\hat\mu`) is a featureless cloud
@@ -210,6 +222,25 @@ term that should be a spline.
 For a predictor **not in the model**, structure indicates the
 predictor carries signal the model is missing.
 
+For example, plotting ``mdl3``'s residuals against ``walkability`` ---
+a predictor that *is* in the model, as a spline --- should produce a
+featureless cloud, confirming that the spline has absorbed the
+walkability effect:
+
+.. code-block:: python
+
+    fig = mdl3.plot_residuals_vs_predictor(X['walkability'], name='walkability')
+
+.. figure:: ../_static/evaluating_fit_mdl3_vs_walkability.png
+   :alt: Deviance residuals from mdl3 plotted against walkability.
+         The points scatter around zero with no trend or curvature.
+   :align: center
+
+   ``mdl3``'s residuals against ``walkability``: a featureless cloud,
+   indicating the spline has captured the walkability effect.
+   Compare with the analogous plot on ``mdl2`` below, where the same
+   predictor was missing.
+
 A diagnosis-and-fix cycle
 -------------------------
 
@@ -235,6 +266,15 @@ question is where.
 
     mdl1.plot_residuals_vs_predictor(X['neighborhood'], name='neighborhood')
 
+.. figure:: ../_static/evaluating_fit_mdl1_vs_neighborhood.png
+   :alt: Deviance residuals from mdl1 plotted against neighborhood.
+         Downtown observations sit well above zero, rural observations
+         well below, with midtown and suburbs in between.
+   :align: center
+
+   ``mdl1``'s residuals stratify cleanly by neighborhood: the
+   structure is the unmodelled neighborhood offset showing through.
+
 Now the structure is unmissable: the residual cloud sits noticeably
 high for ``downtown``, low for ``rural``, with ``midtown`` and
 ``suburbs`` in between. That is the neighborhood offset showing
@@ -249,6 +289,16 @@ remaining structure:
 
     mdl2.plot_residuals_vs_predictor(X['walkability'], name='walkability')
 
+.. figure:: ../_static/evaluating_fit_mdl2_vs_walkability.png
+   :alt: Deviance residuals from mdl2 plotted against walkability,
+         with a rolling-mean overlay tracing a concave-increasing arc.
+   :align: center
+
+   ``mdl2``'s residuals against ``walkability``: the rolling-mean
+   overlay traces out a concave-increasing arc, the signature of an
+   unmodelled nonlinear effect. The featureless version of this same
+   plot for ``mdl3`` appears above in *Residuals vs. a predictor*.
+
 The residuals trace out a concave-increasing arc --- exactly the
 shape of the true :math:`0.5 \cdot w^{0.7}` effect that ``mdl2``
 ignores. Adding ``walkability`` as a *spline* feature (a linear term
@@ -257,27 +307,8 @@ show structure) gives ``mdl3``. A final pass through
 :meth:`~gamdist.GAM.plot_residuals` and
 :meth:`~gamdist.GAM.plot_residuals_vs_predictor` for each predictor
 shows featureless residual clouds on every axis and a straight QQ
-plot. The model has captured the systematic structure.
-
-.. figure:: ../_static/evaluating_fit.png
-   :alt: Four-panel residual diagnostic across three nested rent
-         models. Top-left: residuals from mdl1 plotted against
-         neighborhood, showing a clear offset pattern. Top-right:
-         residuals from mdl2 plotted against walkability, showing
-         a concave-increasing arc traced by a rolling-mean overlay.
-         Bottom-left: residuals from mdl3 plotted against fitted
-         values, showing a featureless cloud centered on zero.
-         Bottom-right: a normal Q-Q plot of mdl3's residuals,
-         falling on the reference line.
-   :align: center
-
-   Residual diagnostics across the three nested models. Each fix
-   removes structure that was visible in the previous model's
-   residuals: adding ``neighborhood`` flattens the categorical
-   pattern (top-left), adding the walkability spline straightens the
-   arc (top-right), and the final model leaves no structure on
-   either the fitted axis (bottom-left) or the QQ plot
-   (bottom-right).
+plot --- the diagnostics for ``mdl3`` shown earlier are exactly that
+final pass. The model has captured the systematic structure.
 
 Notice that residual diagnostics gave a much sharper verdict than the
 information-criteria comparison did. The AIC differences between
