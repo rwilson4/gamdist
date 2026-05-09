@@ -7,6 +7,13 @@
   dataset from getting_started, including a diagnose-and-fix cycle that
   uses residuals-vs-predictor to surface the missing neighborhood and
   walkability effects.
+- Embedded a four-panel diagnostics figure
+  (docs/_static/evaluating_fit.png) showing the residual structure that
+  motivates each step of the fix cycle: neighborhood offsets in mdl1's
+  residuals, walkability curvature in mdl2's residuals, and the
+  featureless cloud + straight QQ that mdl3 leaves behind.
+  docs/_static/render_evaluating_fit.py produces the figure and is
+  checked in for reproducibility.
 - Wired the new guide into docs/user_guides/index.rst between the
   getting-started and network-lasso choropleth guides.
 

@@ -259,6 +259,26 @@ show structure) gives ``mdl3``. A final pass through
 shows featureless residual clouds on every axis and a straight QQ
 plot. The model has captured the systematic structure.
 
+.. figure:: ../_static/evaluating_fit.png
+   :alt: Four-panel residual diagnostic across three nested rent
+         models. Top-left: residuals from mdl1 plotted against
+         neighborhood, showing a clear offset pattern. Top-right:
+         residuals from mdl2 plotted against walkability, showing
+         a concave-increasing arc traced by a rolling-mean overlay.
+         Bottom-left: residuals from mdl3 plotted against fitted
+         values, showing a featureless cloud centered on zero.
+         Bottom-right: a normal Q-Q plot of mdl3's residuals,
+         falling on the reference line.
+   :align: center
+
+   Residual diagnostics across the three nested models. Each fix
+   removes structure that was visible in the previous model's
+   residuals: adding ``neighborhood`` flattens the categorical
+   pattern (top-left), adding the walkability spline straightens the
+   arc (top-right), and the final model leaves no structure on
+   either the fitted axis (bottom-left) or the QQ plot
+   (bottom-right).
+
 Notice that residual diagnostics gave a much sharper verdict than the
 information-criteria comparison did. The AIC differences between
 ``mdl1``, ``mdl2``, and ``mdl3`` were all in single digits --- on AIC
