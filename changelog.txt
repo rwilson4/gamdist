@@ -1,3 +1,15 @@
+2026-05-09 : User guide on evaluating model fit (#5)
+- New docs/user_guides/evaluating_fit.rst covers information criteria
+  (AIC / AICc / BIC / GCV / UBRE), the four residual kinds returned by
+  GAM.residuals (response, Pearson, deviance, Anscombe), and the
+  diagnostic plots produced by GAM.plot_residuals and
+  GAM.plot_residuals_vs_predictor. Worked through on the apartment-rent
+  dataset from getting_started, including a diagnose-and-fix cycle that
+  uses residuals-vs-predictor to surface the missing neighborhood and
+  walkability effects.
+- Wired the new guide into docs/user_guides/index.rst between the
+  getting-started and network-lasso choropleth guides.
+
 2026-05-09 : Regularization-aware effective dof on linear and spline features (#79)
 - Closes the linear / spline slice of #79. Both features previously
   reported a constant dof regardless of regularization; now:
