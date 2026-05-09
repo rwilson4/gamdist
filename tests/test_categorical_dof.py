@@ -225,6 +225,31 @@ def test_full_gam_dispersion_uses_shrunk_dof_for_normal_family() -> None:
     assert phi > 0
 
 
+def test_huber_dof_matches_ridge_in_l2_limit() -> None:
+    # As delta -> infinity Huber collapses to 0.5 * lambda * q^2
+    # elementwise (cf. test_huber_large_delta_matches_ridge), i.e. ridge
+    # with strength lambda / 2. The corresponding edof must match too:
+    # at lambda_huber == 2 * n_c the L2-zone trace formula
+    # n_c / (n_c + 0.5 * lambda_h) gives 0.5 per category, so summed over
+    # K = 4 balanced categories minus the zero-sum constraint we expect 1.
+    regions = ["a", "b", "c", "d"]
+    x = _balanced_x(regions, 10)
+    fpumz = np.zeros(40)
+
+    feat = _CategoricalFeature(
+        name="g", regularization={"huber": {"coef": 20.0, "delta": 1e4}}
+    )
+    feat.initialize(x)
+    feat.optimize(fpumz, rho=1.0)
+    assert feat.dof() == pytest.approx(1.0, abs=1e-3)
+
+    # Parity: ridge with half the coef should land on the same edof.
+    ridge = _CategoricalFeature(name="g", regularization={"l2": {"coef": 10.0}})
+    ridge.initialize(x)
+    ridge.optimize(fpumz, rho=1.0)
+    assert feat.dof() == pytest.approx(ridge.dof(), abs=1e-6)
+
+
 def test_dispersion_raises_on_saturated_normal_model() -> None:
     rng = np.random.default_rng(7)
     regions = [f"r{i:02d}" for i in range(10)]

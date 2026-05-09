@@ -568,7 +568,45 @@ class _LinearFeature(_Feature):
         return 1
 
     def dof(self) -> float:
-        """Effective degrees of freedom contributed by this feature."""
+        r"""Effective degrees of freedom contributed by this feature.
+
+        The unregularized linear feature contributes one parameter (the
+        slope :math:`\beta`). Regularization shrinks the count:
+
+        - **L1 / group lasso / group_lasso_inf**: 0 if the slope was
+          soft-thresholded to zero, else 1.
+        - **L2 (ridge)**: trace of the hat matrix, which for the 1-D
+          design reduces to :math:`x^Tx / (x^Tx + \lambda_2)`. Tends
+          to 1 as :math:`\lambda_2 \to 0` and to 0 as
+          :math:`\lambda_2 \to \infty`.
+        - **Huber**: in the L2 zone (:math:`|m| \le \delta`), trace
+          :math:`x^Tx / (x^Tx + \lambda_2 + 0.5 \lambda_h)` -- the
+          half-Huber penalty's quadratic regime adds
+          :math:`0.5 \lambda_h` to the ridge denominator. In the L1
+          zone the huber term contributes only a linear shift, so the
+          denominator drops back to :math:`x^Tx + \lambda_2`.
+        - **Elastic net (L1 + L2)**: 0 if zeroed by L1, else
+          :math:`x^Tx / (x^Tx + \lambda_2)`.
+        """
+        # Soft-thresholded to zero by L1 / group lasso / group_lasso_inf.
+        if abs(self._m) < 1e-10 and (
+            self._has_l1 or self._has_group_lasso or self._has_group_lasso_inf
+        ):
+            return 0.0
+
+        # Trace formula whenever a quadratic-shrinkage term is active. L2
+        # contributes lambda_2; huber-in-L2-zone contributes 0.5 * lambda_h.
+        in_huber_l2 = self._has_huber and abs(self._m) <= self._delta_huber
+        if self._has_l2 or in_huber_l2:
+            denom = self._xtx
+            if self._has_l2:
+                denom += self._lambda2
+            if in_huber_l2:
+                denom += 0.5 * self._lambda_huber
+            if denom > 0.0:
+                return float(self._xtx / denom)
+
+        # Active feature with no quadratic shrinkage: edof = 1.
         return 1.0
 
     def predict(self, X: npt.NDArray[Any]) -> FloatArray:

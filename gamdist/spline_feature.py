@@ -698,7 +698,27 @@ class _SplineFeature(_Feature):
         return len(self._theta)
 
     def dof(self) -> float:
-        """Effective degrees of freedom contributed by this feature."""
+        r"""Effective degrees of freedom contributed by this feature.
+
+        The spline's curvature penalty already shrinks the active
+        parameter count from ``num_knots`` toward 1; ``self._dof`` is
+        the trace of the smoother
+        :math:`(N^T N + \lambda \Omega)^{-1} N^T N` set at fit time.
+
+        The one regularization that operates on top of this and can
+        therefore reduce ``dof`` further is the group-lasso family
+        (``group_lasso`` / ``group_lasso_inf``), which zeros the
+        feature's contribution :math:`N\theta` once :math:`\lambda` is
+        large enough --- feature selection on a smooth function. The
+        penalties act on :math:`\|N\theta\|`, not on :math:`\theta`
+        directly, so :math:`\theta` itself can be non-tiny while
+        sitting in the (numerical) null space of :math:`N`; the check
+        is therefore on the fitted contribution, not :math:`\theta`.
+        """
+        if self._has_group_lasso or self._has_group_lasso_inf:
+            f_hat = self._N @ self._theta
+            if float(np.max(np.abs(f_hat))) < 1e-4:
+                return 0.0
         return float(self._dof)
 
     def predict(self, X: npt.NDArray[Any]) -> FloatArray:
