@@ -1,3 +1,32 @@
+2026-05-09 : Regularization-aware effective dof on linear and spline features (#79)
+- Closes the linear / spline slice of #79. Both features previously
+  reported a constant dof regardless of regularization; now:
+- _LinearFeature.dof(): unregularized = 1; L1 / group_lasso /
+  group_lasso_inf = 0 if the slope was soft-thresholded to zero, else
+  1; L2 = trace ``xtx / (xtx + lambda_2)``; Huber-in-L2-zone =
+  ``xtx / (xtx + lambda_2 + 0.5 * lambda_h)`` (the half-Huber
+  penalty's quadratic regime contributes 0.5 * lambda_h to the ridge
+  denominator); Huber-in-L1-zone falls back to the L2 formula. The
+  elastic-net (L1 + L2) case routes through the same trace formula
+  whenever the feature is active.
+- _SplineFeature.dof(): defaults to the curvature-penalty trace
+  ``self._dof`` (unchanged) but returns 0 when the group-lasso family
+  has zeroed the feature's *contribution* ``N theta``. The check is on
+  ``N theta``, not theta itself, because the group-lasso penalty acts
+  on ``||N theta||`` and theta can sit in the numerical null space of
+  N at large lambda.
+- Fixed a factor-of-2 bug in _CategoricalFeature's huber dof formula
+  introduced alongside #82: the half-Huber penalty has Hessian
+  `lambda` in the L2 zone, so the hat-matrix denominator picks up
+  ``0.5 * lambda``, not ``lambda``. Confirmed by the existing
+  test_huber_large_delta_matches_ridge parity (huber(coef=lam,
+  delta=inf) == ridge(coef=lam/2)) and a new analogous edof-parity
+  test in test_categorical_dof.py.
+- New tests/test_linear_dof.py (7 tests) and tests/test_spline_dof.py
+  (2 tests) pin the analytic limits and intermediate fits for each
+  regime. Existing 119-test linear / categorical / spline subset still
+  passes with no changes.
+
 2026-05-09 : Network-lasso choropleth guide refreshed for the new edof
 - Updated docs/user_guides/network_lasso_choropleth.rst to reflect the
   regularization-aware ``dof()`` from #79/#82. Headline lambda moved

@@ -982,9 +982,15 @@ class _CategoricalFeature(_Feature):
             return float(max(edof - zero_sum_credit, 0.0))
 
         # Huber: per-category mix of L2 trace and L1 active-set count.
+        # The half-Huber penalty 0.5 * lambda * h_delta(q) has Hessian
+        # `lambda` in the L2 zone (cvxpy's huber returns q^2 there); the
+        # hat-matrix denominator therefore picks up `0.5 * lambda` once
+        # we factor out the leading 2 of the residual Hessian. (See the
+        # `test_huber_large_delta_matches_ridge` parity test, which
+        # confirms huber(coef=lam, delta=inf) == ridge(coef=lam/2).)
         if self._has_huber:
             in_l2 = np.abs(p) <= self._delta_huber
-            denom = ata_diag + self._lambda_huber_vec
+            denom = ata_diag + 0.5 * self._lambda_huber_vec
             denom = np.where(denom > 0, denom, 1.0)
             l2_part = np.where(in_l2, ata_diag / denom, 0.0).sum()
             l1_active = int(np.sum((~in_l2) & (np.abs(p) > 1e-8)))
