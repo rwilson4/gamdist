@@ -10,3 +10,4 @@ start with the first.
    :maxdepth: 1
 
    getting_started
+   network_lasso_choropleth
