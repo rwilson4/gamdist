@@ -1,3 +1,28 @@
+2026-05-09 : Regularization-aware effective dof on _CategoricalFeature (#79)
+- Replaced _CategoricalFeature.dof()'s constant ``len(self.p) - 1`` with a
+  regularization-aware formula that reflects the *fitted* coefficient
+  vector. Previously the categorical feature reported one degree of
+  freedom per category regardless of the fit, so AIC / AICc / BIC / GCV
+  all over-penalized regularized models -- most visibly for
+  ``network_lasso``, where the visible fusion of neighboring categories
+  was ignored entirely.
+- Per-regime formulas: L1 -> active-set count; L2 -> trace
+  ``sum_c n_c / (n_c + lambda_c)``; Huber -> per-category mix of the L2
+  trace and an active-set count; network ridge -> trace of
+  ``(A^T A + lambda L)^{-1} A^T A`` via a sparse LU factorization
+  (combines additively with L2); network lasso -> count of distinct
+  fitted values within tolerance; group_lasso / group_lasso_inf -> 0 if
+  the feature was selected out, else K-1. All formulas subtract one for
+  the zero-sum constraint.
+- Added a clear ValueError in GAM.dispersion() when residual dof is
+  non-positive, replacing the silent ZeroDivisionError that fired for
+  saturated normal-family fits. The new dof formula already pulls
+  most network-lasso fits below n_obs, so this error surfaces only for
+  models that genuinely cannot estimate a dispersion.
+- New tests/test_categorical_dof.py covers the analytic limits
+  (``lambda -> 0``, ``lambda -> infinity``) and intermediate fits for
+  every per-category regularizer plus the dispersion error path.
+
 2026-05-09 : Network-lasso choropleth user guide
 - Added docs/user_guides/network_lasso_choropleth.rst, a worked example
   that fits a GAM with network-lasso regularization on a county-adjacency
