@@ -1,3 +1,15 @@
+2026-05-09 : Network-lasso choropleth user guide
+- Added docs/user_guides/network_lasso_choropleth.rst, a worked example
+  that fits a GAM with network-lasso regularization on a county-adjacency
+  graph and renders a side-by-side choropleth (raw / fit / truth) of
+  simulated log median household income for Georgia counties. Uses the
+  bundled libpysal `georgia` shapefile + Queen contiguity, so the example
+  runs offline. Wires the new page into docs/user_guides/index.rst.
+- Documents geopandas / libpysal as optional extras (not added to the
+  runtime dependency list); the guide notes the same workflow generalizes
+  to any TIGER/Line shapefile or GeoJSON of geographic units. No code
+  changes to gamdist itself.
+
 2026-04-27 : Sphinx-ready docstring audit
 - Audited every module's docstrings and reworked them for clean Sphinx /
   Napoleon rendering. No behavior changes; pure documentation.
