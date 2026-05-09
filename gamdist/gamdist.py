@@ -1907,7 +1907,16 @@ class GAM:
         if self._family == "normal":
             if self._known_dispersion:
                 return float(self._dispersion)
-            return float(self.deviance() / (self._num_obs - self.dof()))
+            residual_dof = self._num_obs - self.dof()
+            if residual_dof <= 0:
+                raise ValueError(
+                    "Cannot estimate dispersion: residual degrees of freedom "
+                    f"is {residual_dof:g} (n_obs={self._num_obs}, "
+                    f"dof={self.dof():g}). The model is saturated -- add more "
+                    "data, drop a feature, or apply regularization that fuses "
+                    "or shrinks coefficients."
+                )
+            return float(self.deviance() / residual_dof)
         if self._family == "binomial":
             if self._known_dispersion:
                 return float(self._dispersion)

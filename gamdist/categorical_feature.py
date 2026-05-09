@@ -41,6 +41,7 @@ import cvxpy as cvx
 import numpy as np
 import numpy.typing as npt
 from scipy import sparse
+from scipy.sparse.linalg import splu
 
 from .feature import _Feature
 
@@ -914,8 +915,100 @@ class _CategoricalFeature(_Feature):
         return int(self.x[observation]), self._num_categories
 
     def dof(self) -> float:
-        """Effective degrees of freedom contributed by this feature."""
-        return float(len(self.p) - 1)
+        r"""Effective degrees of freedom contributed by this feature.
+
+        The count reflects the *fitted* coefficient vector, not just the
+        category count, so the value shrinks under any regularization
+        that compresses the fit:
+
+        - Unregularized: ``K - 1`` (one zero-sum constraint).
+        - **L1**: number of nonzero coefficients (active set), minus the
+          zero-sum constraint when at least two are active.
+        - **L2 / ridge**: trace of the hat matrix
+          :math:`\mathrm{tr}((A^T A + \mathrm{diag}(\lambda))^{-1} A^T A)
+          = \sum_c n_c / (n_c + \lambda_c)`, minus the zero-sum constraint.
+          Tends to ``K - 1`` as :math:`\lambda \to 0` and to 0 as
+          :math:`\lambda \to \infty`.
+        - **Huber**: per-category mix of the L2 trace contribution
+          (categories with :math:`|q_c| \le \delta`) and an active-set
+          contribution of 1 (categories with :math:`|q_c| > \delta`).
+        - **Network ridge**: trace of
+          :math:`(A^T A + \lambda L)^{-1} A^T A` with the (weighted)
+          graph Laplacian :math:`L`, minus the zero-sum constraint.
+          Combines additively with an active L2 penalty.
+        - **Network lasso**: number of *distinct* fitted values within
+          numerical tolerance, minus the zero-sum constraint. Counts
+          the actual fused groups produced by the fit.
+        - **Group lasso / group_lasso_inf**: 0 if the entire fit is
+          zero (the feature got selected out), else the unregularized
+          ``K - 1``.
+
+        For combinations of penalties the formula above for the most
+        binding penalty applies (``network_lasso`` dominates if active,
+        followed by ``network_ridge``, then the per-category penalties).
+        """
+        if self._num_categories <= 1:
+            return 0.0
+
+        K = int(self._num_categories)
+        p = np.asarray(self.p, dtype=float)
+        zero_sum_credit = 1.0  # We subtract one for the zero-sum constraint
+        # whenever the active subspace has at least two free directions.
+
+        # Group-lasso variants are all-or-nothing on this feature: if the
+        # whole vector got zeroed out, there is no fitted parameter.
+        if (self._has_group_lasso or self._has_group_lasso_inf) and np.max(
+            np.abs(p)
+        ) < 1e-8:
+            return 0.0
+
+        # Network lasso fuses neighbors to identical values. The active
+        # parameter count is the number of distinct fitted values, since
+        # every fused cluster shares one coefficient.
+        if self._has_network_lasso:
+            tol = 1e-6
+            unique_count = int(np.unique(np.round(p / tol).astype(np.int64)).size)
+            return float(max(unique_count - zero_sum_credit, 0.0))
+
+        ata_diag = np.asarray(self._AtA.diagonal(), dtype=float)
+
+        # Network ridge: tr((A^T A + λL + diag(λ_2))^{-1} A^T A).
+        # Combines additively with L2 if both are present.
+        if self._has_network_ridge:
+            M = self._AtA.tocsr() + float(self._lambda_network_ridge) * self._L.tocsr()
+            if self._has_l2:
+                M = M + sparse.diags(self._lambda2, format="csr")
+            edof = _trace_Minv_diag(M, ata_diag)
+            return float(max(edof - zero_sum_credit, 0.0))
+
+        # Huber: per-category mix of L2 trace and L1 active-set count.
+        if self._has_huber:
+            in_l2 = np.abs(p) <= self._delta_huber
+            denom = ata_diag + self._lambda_huber_vec
+            denom = np.where(denom > 0, denom, 1.0)
+            l2_part = np.where(in_l2, ata_diag / denom, 0.0).sum()
+            l1_active = int(np.sum((~in_l2) & (np.abs(p) > 1e-8)))
+            edof = float(l2_part) + float(l1_active)
+            return float(max(edof - zero_sum_credit, 0.0))
+
+        # L2 ridge: closed-form trace formula.
+        if self._has_l2:
+            denom = ata_diag + self._lambda2
+            # Categories with no observations and no penalty contribute 0.
+            denom = np.where(denom > 0, denom, 1.0)
+            edof = float(np.sum(ata_diag / denom))
+            return float(max(edof - zero_sum_credit, 0.0))
+
+        # L1 lasso: active-set count.
+        if self._has_l1:
+            active = int(np.sum(np.abs(p) > 1e-8))
+            if active <= 1:
+                return float(active)
+            return float(active - zero_sum_credit)
+
+        # Plain unregularized categorical (or only group-lasso with a
+        # nonzero fit): K - 1.
+        return float(K - 1)
 
     def predict(self, X: npt.NDArray[Any]) -> FloatArray:
         """Apply fitted model to feature.
@@ -952,3 +1045,24 @@ class _CategoricalFeature(_Feature):
         for cat in self._categories:
             desc += f"  {cat}: {self.p[self._category_hash[cat]]:.06g}\n"
         return desc
+
+
+def _trace_Minv_diag(M: sparse.spmatrix, diag: FloatArray) -> float:
+    r"""Compute :math:`\mathrm{tr}(M^{-1} \mathrm{diag}(d))`.
+
+    Used by ``_CategoricalFeature.dof()`` to evaluate the trace-form
+    effective degrees of freedom under network-ridge or L2 + Laplacian
+    penalties without materializing :math:`M^{-1}` densely. The trace
+    equals :math:`\sum_c d_c \cdot (M^{-1})_{cc}`, so we factor :math:`M`
+    once and read off the diagonal of :math:`M^{-1}` by solving against
+    the identity column-by-column.
+    """
+    K = int(M.shape[0])
+    lu = splu(M.tocsc())
+    diag_inv = np.zeros(K, dtype=float)
+    e = np.zeros(K, dtype=float)
+    for c in range(K):
+        e[c] = 1.0
+        diag_inv[c] = float(lu.solve(e)[c])
+        e[c] = 0.0
+    return float(np.sum(diag * diag_inv))
