@@ -216,6 +216,17 @@ the panels are directly comparable:
     fig.suptitle('Simulated log median household income, Georgia counties')
     plt.show()
 
+.. figure:: ../_static/network_lasso_choropleth.png
+   :alt: Three-panel choropleth of Georgia counties: noisy survey
+         means on the left, the network-lasso fit in the middle, and
+         the smooth truth on the right.
+   :align: center
+
+   Network-lasso smoothing of a simulated per-county survey of log
+   median household income. The middle panel collapses 159 counties to
+   ~105 distinct values; many internal boundaries disappear as
+   neighbors fuse to identical coefficients.
+
 The left panel is mottled --- noise dominates the per-county means.
 The middle panel shows the smoothed estimate: most county boundaries
 have *vanished* because the network lasso has fused neighboring

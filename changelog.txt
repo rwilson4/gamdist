@@ -9,6 +9,11 @@
   runtime dependency list); the guide notes the same workflow generalizes
   to any TIGER/Line shapefile or GeoJSON of geographic units. No code
   changes to gamdist itself.
+- Embedded a rendered three-panel choropleth in the guide: added
+  docs/_static/network_lasso_choropleth.png (the figure produced by the
+  example) and a checked-in render script alongside it for
+  reproducibility. Wired ``html_static_path = ["_static"]`` into
+  docs/conf.py so the asset is picked up by the Sphinx build.
 
 2026-04-27 : Sphinx-ready docstring audit
 - Audited every module's docstrings and reworked them for clean Sphinx /
