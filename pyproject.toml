@@ -58,6 +58,7 @@ include = [
     "README.md",
     "changelog.txt",
     "license.txt",
+    "NOTICE",
     "CLAUDE.md",
 ]
 

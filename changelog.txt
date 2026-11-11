@@ -1,3 +1,10 @@
+2026-11-11 : Include the full Apache License 2.0 text
+- license.txt previously held only the short "Licensed under the Apache
+  License..." notice; it now contains the complete, verbatim Apache
+  License, Version 2.0 text from apache.org.
+- The Match Group copyright attribution moved to a new NOTICE file
+  (per Section 4(d) of the license), which is now included in the sdist.
+
 2026-05-09 : User guide on evaluating model fit (#5)
 - New docs/user_guides/evaluating_fit.rst covers information criteria
   (AIC / AICc / BIC / GCV / UBRE), the four residual kinds returned by
