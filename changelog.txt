@@ -1,3 +1,46 @@
+2026-11-11 : Coefficient tables and Wald / score / likelihood-ratio tests (#47)
+- New GAM methods for parametric inference on models built from linear
+  and categorical features (the _design_matrix parametrization from #34:
+  intercept, raw linear columns, treatment contrasts):
+  - coefficients(): point estimates, recovered by projecting the fitted
+    linear predictor onto the design. This is exact, because each
+    feature's contribution lies in its own block's span.
+  - parameter_covariance(cov_type="nonrobust" | "HC0" | "HC1"): the
+    model-based phi * (X'WX)^{-1} (observation weights supported), or
+    the existing sandwich estimator.
+  - parameter_summary(cov_type, width): DataFrame of estimate /
+    std_err / z / p_value / Wald CI, using a normal reference as
+    statsmodels.GLM does.
+  - wald_test(hypothesis, value, cov_type, use_f): R beta = q. The
+    hypothesis can be a feature name (the joint test over its
+    coefficients), a coefficient name, a list of names, or an R matrix.
+  - lr_test(other): analysis of deviance against a nested model. Uses
+    chi2 when phi is fixed a priori and F(df, n - edof_full) when phi
+    is estimated. Uses effective dof, so it also accepts spline
+    models (approximate).
+  - score_test(restricted): Rao score test on the full design,
+    evaluated at the restricted fit.
+- All tests return the new gamdist.HypothesisTest dataclass.
+- Penalized fits (effective dof != parameter count) raise a
+  UserWarning from the Wald / summary path: the standard errors are
+  naive values at the shrunk estimate.
+- Quantile / huber families are rejected because they have no
+  likelihood.
+- New GAM._dispersion_fixed flag (persisted; older pickles fall back
+  to known_dispersion) records whether phi was fixed at construction.
+  It is needed because _poisson_overdispersion /
+  _binomial_*_dispersion cache an estimated phi by setting
+  _known_dispersion = True.
+- statsmodels added to the dev extra so the statsmodels-referenced
+  tests run in CI. Previously these tests, including the #34
+  robust-covariance tests, were silently skipped via importorskip.
+- Formulas are pinned against statsmodels 0.15 at a common mu, to about
+  1e-6 relative on SEs, CIs, Wald, LR and score statistics. One note:
+  statsmodels' GLM HC1 currently equals its HC0 (no n / (n - p)
+  factor), so the robust comparison uses HC0.
+- New "Coefficient inference and hypothesis tests" section in
+  docs/user_guides/evaluating_fit.rst.
+
 2026-11-11 : Include the full Apache License 2.0 text
 - license.txt previously held only the short "Licensed under the Apache
   License..." notice; it now contains the complete, verbatim Apache

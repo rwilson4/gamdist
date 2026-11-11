@@ -44,8 +44,10 @@ from __future__ import annotations
 
 import os
 import pickle
-from collections.abc import Callable
+import warnings
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
@@ -155,6 +157,37 @@ QUASI_BASE_FAMILY = {
 SUPPORTED_FAMILY_LINK_PAIRS: frozenset[tuple[str, str]] = frozenset(
     CANONICAL_LINKS.items()
 )
+
+
+@dataclass(frozen=True)
+class HypothesisTest:
+    """Result of a Wald, score, or likelihood-ratio test.
+
+    Attributes
+    ----------
+    test : str
+        ``"wald"``, ``"score"``, or ``"likelihood_ratio"``.
+    statistic : float
+        The test statistic. For ``distribution == "chi2"`` this is
+        asymptotically :math:`\\chi^2_{df}` under the null; for
+        ``distribution == "f"`` it is asymptotically
+        :math:`F_{df, df\\_denom}`.
+    df : float
+        Numerator degrees of freedom (the number of restrictions).
+    p_value : float
+        Upper-tail probability of ``statistic`` under the null.
+    distribution : str
+        Reference distribution: ``"chi2"`` or ``"f"``.
+    df_denom : float or None
+        Denominator degrees of freedom for an F test, else ``None``.
+    """
+
+    test: str
+    statistic: float
+    df: float
+    p_value: float
+    distribution: str
+    df_denom: float | None = None
 
 
 def _plot_convergence(
@@ -469,6 +502,11 @@ class GAM:
             self._dispersion = FAMILIES_WITH_KNOWN_DISPERSIONS[self._family]
         else:
             self._known_dispersion = False
+        # ``_known_dispersion`` is later flipped to True when an estimated
+        # phi is cached (see ``_poisson_overdispersion``); this flag keeps
+        # the construction-time answer to "is phi fixed a priori?", which
+        # is what inference (chi-squared vs. F) needs.
+        self._dispersion_fixed = self._known_dispersion
 
         if self._link == "identity":
             self._eval_link = lambda x: x
@@ -506,6 +544,7 @@ class GAM:
         mv["family"] = self._family
         mv["link"] = self._link
         mv["known_dispersion"] = self._known_dispersion
+        mv["dispersion_fixed"] = self._dispersion_fixed
         if self._known_dispersion:
             mv["dispersion"] = self._dispersion
         mv["tau"] = self._tau
@@ -565,6 +604,9 @@ class GAM:
                 f"{canonical!r} for family={self._family!r}."
             )
         self._known_dispersion = mv["known_dispersion"]
+        # Older pickles predate the flag; the best available proxy is
+        # ``known_dispersion`` (which an estimated-and-cached phi can taint).
+        self._dispersion_fixed = mv.get("dispersion_fixed", self._known_dispersion)
         if self._known_dispersion:
             self._dispersion = mv["dispersion"]
         self._tau = mv.get("tau")
@@ -1407,6 +1449,452 @@ class GAM:
                 cov = cov * (n / (n - p))
 
         return np.asarray(cov, dtype=float)
+
+    # ------------------------------------------------------------------
+    # Parametric inference: coefficients, covariance, Wald / score / LR.
+    # ------------------------------------------------------------------
+
+    def _fitted_eta(self) -> FloatArray:
+        """Fitted linear predictor on the training data."""
+        return np.asarray(self._num_features * self.f_bar, dtype=float)
+
+    def _check_inference_supported(self, method: str) -> None:
+        if not self._fitted:
+            raise AttributeError("Model not yet fit.")
+        if self._family in ("quantile", "huber"):
+            raise NotImplementedError(
+                f"{method} does not support family={self._family!r}: it is an "
+                "M-estimator without a likelihood."
+            )
+
+    def _warn_if_penalized(self, method: str, p: int) -> None:
+        """Warn when shrinkage makes the effective dof differ from ``p``.
+
+        ``dof()`` is regularization-aware (#79): it equals the column
+        count of ``_design_matrix`` exactly when no feature is shrunk.
+        Wald / score inference at a penalized point estimate ignores
+        the penalty's bias and its contribution to the Hessian, so the
+        nominal coverage does not hold.
+        """
+        edof = self.dof()
+        if abs(edof - p) > 1e-6 * max(1.0, p):
+            warnings.warn(
+                f"{method}: the model is regularized (effective dof {edof:.4g} "
+                f"vs. {p} parameters). Standard errors are the naive values at "
+                "the penalized estimate and ignore shrinkage bias; nominal "
+                "coverage and test sizes do not hold.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    def coefficients(self) -> pd.Series:
+        """Point estimates in the ``_design_matrix`` parametrization.
+
+        The parametrization is the ``statsmodels`` / ``patsy`` default:
+        an intercept, one raw (uncentered, post-``transform``) column
+        per linear feature, and ``K - 1`` treatment-contrast columns per
+        categorical feature (dropping the lexicographically-first
+        level). Coefficients are recovered by projecting the fitted
+        linear predictor onto that design. Because each feature's
+        contribution lies in the span of its own design block, the
+        projection is exact (up to floating point) and does not require
+        reaching into any feature's internal coefficient storage.
+
+        Returns
+        -------
+        beta : pandas.Series
+            Indexed by column name (``"Intercept"``, ``"x1"``,
+            ``"cat[T.b]"``, ...).
+
+        Raises
+        ------
+        AttributeError
+            If the model has not been fit.
+        NotImplementedError
+            For spline features or binomial covariate classes (see
+            ``_design_matrix``).
+        """
+        if not self._fitted:
+            raise AttributeError("Model not yet fit.")
+        D, names = self._design_matrix()
+        beta, *_ = linalg.lstsq(D, self._fitted_eta())
+        return pd.Series(np.asarray(beta, dtype=float), index=names, name="estimate")
+
+    def parameter_covariance(self, cov_type: str = "nonrobust") -> FloatArray:
+        r"""Covariance of :meth:`coefficients`.
+
+        Parameters
+        ----------
+        cov_type : ``"nonrobust"``, ``"HC0"``, or ``"HC1"``
+            ``"nonrobust"`` (default) is the model-based inverse Fisher
+            information
+
+            .. math::
+
+               V = \phi \, (X^\top W X)^{-1},
+               \qquad W_{ii} = w_i \, (d\mu/d\eta)_i^2 / V(\mu_i),
+
+            where :math:`w_i` are the observation weights (if any) and
+            :math:`\phi` is :meth:`dispersion` (fixed at 1 for binomial
+            and Poisson unless over-dispersion is estimated). For
+            unpenalized canonical-link fits with normal, binomial or
+            Poisson families this matches
+            ``statsmodels.GLM(...).fit().cov_params()``. ``"HC0"`` and
+            ``"HC1"`` dispatch to :meth:`robust_covariance`.
+
+        Returns
+        -------
+        V : (p, p) ndarray
+            Ordered as :meth:`coefficients`.
+
+        Warns
+        -----
+        UserWarning
+            If any feature is regularized (see the note in
+            :meth:`parameter_summary`).
+        """
+        self._check_inference_supported("parameter_covariance")
+        if cov_type in ("HC0", "HC1"):
+            cov = self.robust_covariance(cov_type=cov_type)
+            self._warn_if_penalized("parameter_covariance", cov.shape[0])
+            return cov
+        if cov_type != "nonrobust":
+            raise NotImplementedError(
+                f"cov_type={cov_type!r} not supported. Use 'nonrobust', 'HC0' or 'HC1'."
+            )
+
+        D, _ = self._design_matrix()
+        mu = self._eval_inv_link(self._fitted_eta())
+        weight, _ = self._glm_irls_terms(self._y, mu)
+        if self._weights is not None:
+            weight = weight * np.asarray(self._weights, dtype=float)
+        info = D.T @ (weight[:, None] * D)
+        cov = self.dispersion() * linalg.inv(info)
+        self._warn_if_penalized("parameter_covariance", D.shape[1])
+        return np.asarray(cov, dtype=float)
+
+    def parameter_summary(
+        self, cov_type: str = "nonrobust", width: float = 0.95
+    ) -> pd.DataFrame:
+        """Coefficient table: estimate, standard error, z, p-value, Wald CI.
+
+        Inference uses the normal reference distribution (as
+        ``statsmodels.GLM`` does by default) for every family,
+        including those with an estimated dispersion.
+
+        .. note::
+
+           The table is only valid for unpenalized fits. For a
+           regularized model the estimates are shrunk and the
+           covariance omits the penalty Hessian, so the intervals are
+           not confidence intervals in the frequentist sense; a
+           ``UserWarning`` is issued.
+
+        Parameters
+        ----------
+        cov_type : ``"nonrobust"``, ``"HC0"``, or ``"HC1"``
+            Covariance estimator; see :meth:`parameter_covariance`.
+        width : float
+            Confidence level in :math:`(0, 1)` for the Wald intervals.
+            Defaults to ``0.95``.
+
+        Returns
+        -------
+        table : pandas.DataFrame
+            Indexed by coefficient name, with columns ``estimate``,
+            ``std_err``, ``z``, ``p_value``, ``ci_lower``, ``ci_upper``.
+        """
+        if not (0.0 < width < 1.0):
+            raise ValueError(f"width must be in (0, 1); got {width}.")
+        beta = self.coefficients()
+        cov = self.parameter_covariance(cov_type=cov_type)
+        se = np.sqrt(np.diag(cov))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z = beta.to_numpy() / se
+        p_value = 2.0 * stats.norm.sf(np.abs(z))
+        q = stats.norm.ppf(0.5 + 0.5 * width)
+        return pd.DataFrame(
+            {
+                "estimate": beta.to_numpy(),
+                "std_err": se,
+                "z": z,
+                "p_value": p_value,
+                "ci_lower": beta.to_numpy() - q * se,
+                "ci_upper": beta.to_numpy() + q * se,
+            },
+            index=beta.index,
+        )
+
+    def _restriction_matrix(
+        self,
+        hypothesis: str | Sequence[str] | npt.ArrayLike,
+        names: list[str],
+    ) -> FloatArray:
+        """Translate a Wald hypothesis spec into a restriction matrix."""
+        if isinstance(hypothesis, str):
+            hypothesis = [hypothesis]
+        if isinstance(hypothesis, (list, tuple)) and all(
+            isinstance(h, str) for h in hypothesis
+        ):
+            idx: list[int] = []
+            for h in hypothesis:
+                matched = [
+                    j
+                    for j, nm in enumerate(names)
+                    if nm == h or nm.startswith(f"{h}[T.")
+                ]
+                if not matched:
+                    raise ValueError(
+                        f"{h!r} matches no coefficient. Available: {names}."
+                    )
+                idx.extend(j for j in matched if j not in idx)
+            R = np.zeros((len(idx), len(names)))
+            R[np.arange(len(idx)), idx] = 1.0
+            return R
+        R = np.atleast_2d(np.asarray(hypothesis, dtype=float))
+        if R.ndim != 2 or R.shape[1] != len(names):
+            raise ValueError(
+                f"Restriction matrix must have {len(names)} columns; got shape "
+                f"{R.shape}."
+            )
+        return R
+
+    def wald_test(
+        self,
+        hypothesis: str | Sequence[str] | npt.ArrayLike,
+        value: npt.ArrayLike | None = None,
+        cov_type: str = "nonrobust",
+        use_f: bool = False,
+    ) -> HypothesisTest:
+        r"""Wald test of the linear hypothesis :math:`R \beta = q`.
+
+        The statistic is
+
+        .. math::
+
+           W = (R\hat\beta - q)^\top (R V R^\top)^{-1} (R\hat\beta - q),
+
+        asymptotically :math:`\chi^2_r` with :math:`r = \mathrm{rank}(R)`.
+        With ``use_f=True`` the statistic is :math:`W / r` referred to
+        :math:`F_{r,\, n - p}`, the usual finite-sample choice when the
+        dispersion is estimated.
+
+        Parameters
+        ----------
+        hypothesis : str, sequence of str, or array-like
+            * A feature name (e.g. ``"cat"``) tests that every
+              coefficient of that feature is zero -- for a categorical
+              feature this is the joint test over all its contrasts.
+            * A coefficient name (``"cat[T.b]"``, ``"Intercept"``).
+            * A list mixing the two: the joint test of all of them.
+            * An ``(r, p)`` restriction matrix ``R`` in the column order
+              of :meth:`coefficients`.
+        value : array-like, optional
+            The right-hand side ``q`` (length ``r``). Defaults to zero.
+        cov_type : ``"nonrobust"``, ``"HC0"``, or ``"HC1"``
+            Covariance estimator; see :meth:`parameter_covariance`.
+        use_f : bool
+            Refer ``W / r`` to an F distribution instead of ``W`` to a
+            chi-squared. Defaults to ``False``.
+
+        Returns
+        -------
+        HypothesisTest
+        """
+        beta = self.coefficients()
+        cov = self.parameter_covariance(cov_type=cov_type)
+        R = self._restriction_matrix(hypothesis, list(beta.index))
+        q = np.zeros(R.shape[0]) if value is None else np.asarray(value, dtype=float)
+        q = np.atleast_1d(q)
+        if q.shape != (R.shape[0],):
+            raise ValueError(f"value must have length {R.shape[0]}; got {q.shape}.")
+        r = float(np.linalg.matrix_rank(R))
+        diff = R @ beta.to_numpy() - q
+        stat = float(diff @ np.linalg.pinv(R @ cov @ R.T) @ diff)
+        if use_f:
+            df_denom = float(self._num_obs - len(beta))
+            f_stat = stat / r
+            return HypothesisTest(
+                test="wald",
+                statistic=f_stat,
+                df=r,
+                p_value=float(stats.f.sf(f_stat, r, df_denom)),
+                distribution="f",
+                df_denom=df_denom,
+            )
+        return HypothesisTest(
+            test="wald",
+            statistic=stat,
+            df=r,
+            p_value=float(stats.chi2.sf(stat, r)),
+            distribution="chi2",
+        )
+
+    def _check_nested(self, restricted: GAM, method: str) -> None:
+        """Raise unless ``restricted`` is a sub-model of ``self`` on the same data."""
+        if not (self._fitted and restricted._fitted):
+            raise AttributeError("Both models must be fit.")
+        if (self._family, self._link) != (restricted._family, restricted._link):
+            raise ValueError(
+                f"{method}: models must share family and link; got "
+                f"({self._family!r}, {self._link!r}) vs. "
+                f"({restricted._family!r}, {restricted._link!r})."
+            )
+        if self._num_obs != restricted._num_obs or not np.array_equal(
+            np.asarray(self._y), np.asarray(restricted._y)
+        ):
+            raise ValueError(f"{method}: models must be fit to the same response.")
+        w_self, w_r = self._weights, restricted._weights
+        if (w_self is None) != (w_r is None) or (
+            w_self is not None and not np.array_equal(w_self, w_r)
+        ):
+            raise ValueError(f"{method}: models must use the same weights.")
+        if self._has_covariate_classes != restricted._has_covariate_classes or (
+            self._has_covariate_classes
+            and not np.array_equal(
+                self._covariate_class_sizes, restricted._covariate_class_sizes
+            )
+        ):
+            raise ValueError(f"{method}: models must use the same covariate classes.")
+        extra = set(restricted._features) - set(self._features)
+        if extra:
+            raise ValueError(
+                f"{method}: restricted model has features {sorted(extra)} absent "
+                "from the full model, so the models are not nested."
+            )
+
+    def lr_test(self, other: GAM) -> HypothesisTest:
+        r"""Likelihood-ratio (analysis-of-deviance) test against a nested model.
+
+        The model with fewer effective degrees of freedom is taken as
+        the restricted one; its features must be a subset (by name) of
+        the other's, and both must be fit to the same response with
+        the same family, link, weights and covariate classes.
+
+        With known dispersion :math:`\phi` (binomial, Poisson, or a
+        user-supplied value) the statistic is
+
+        .. math::
+
+           \Lambda = (D_0 - D_1) / \phi \sim \chi^2_{\nu_1 - \nu_0},
+
+        where :math:`D_0, D_1` are the restricted and full deviances
+        and :math:`\nu_0, \nu_1` are their :meth:`dof`. With estimated
+        dispersion the statistic is the F ratio
+
+        .. math::
+
+           F = \frac{(D_0 - D_1) / (\nu_1 - \nu_0)}{\hat\phi_1}
+               \sim F_{\nu_1 - \nu_0,\; n - \nu_1},
+
+        with :math:`\hat\phi_1` the full model's :meth:`dispersion`
+        (as in R's ``anova(..., test = "F")``).
+
+        The degrees of freedom are the regularization-aware effective
+        dofs, so for penalized or spline models the test is the usual
+        approximate GAM analysis of deviance; it is exact (asymptotically)
+        only for unpenalized fits.
+
+        Parameters
+        ----------
+        other : GAM
+            A fitted model nested in (or nesting) ``self``.
+
+        Returns
+        -------
+        HypothesisTest
+        """
+        self._check_inference_supported("lr_test")
+        full, restricted = (self, other) if self.dof() >= other.dof() else (other, self)
+        full._check_nested(restricted, "lr_test")
+        df = full.dof() - restricted.dof()
+        if df <= 1e-8:
+            raise ValueError(
+                "lr_test: models have the same degrees of freedom "
+                f"({full.dof():g}); nothing to test."
+            )
+        dev_diff = restricted.deviance() - full.deviance()
+        if full._dispersion_fixed:
+            stat = dev_diff / full.dispersion()
+            return HypothesisTest(
+                test="likelihood_ratio",
+                statistic=float(stat),
+                df=float(df),
+                p_value=float(stats.chi2.sf(stat, df)),
+                distribution="chi2",
+            )
+        df_denom = float(full._num_obs - full.dof())
+        stat = (dev_diff / df) / full.dispersion()
+        return HypothesisTest(
+            test="likelihood_ratio",
+            statistic=float(stat),
+            df=float(df),
+            p_value=float(stats.f.sf(stat, df, df_denom)),
+            distribution="f",
+            df_denom=df_denom,
+        )
+
+    def score_test(self, restricted: GAM) -> HypothesisTest:
+        r"""Rao score (Lagrange-multiplier) test of ``restricted`` against ``self``.
+
+        ``self`` is the full model; ``restricted`` is a fitted sub-model
+        (feature names a subset of ``self``'s) on the same data. Only
+        the restricted model's fitted mean is used: with
+        :math:`U = X^\top (w \odot s)` and
+        :math:`I = X^\top \mathrm{diag}(w \odot W) X` evaluated at the
+        restricted :math:`\tilde\mu` on the *full* design :math:`X`,
+
+        .. math::
+
+           S = U^\top I^{-1} U / \tilde\phi \sim \chi^2_{p - \nu_0},
+
+        where :math:`\tilde\phi` is the restricted model's
+        :meth:`dispersion`, :math:`p` the full design's column count
+        and :math:`\nu_0` the restricted :meth:`dof`. This matches
+        ``statsmodels``' ``GLMResults.score_test`` for unpenalized fits.
+
+        The full model need not be well-conditioned at its own optimum
+        for this test -- only the restricted model's fit and the full
+        design enter -- but ``self`` must be fit so its design matrix
+        is available, and it is subject to the same feature-type
+        limits as :meth:`coefficients`.
+
+        Parameters
+        ----------
+        restricted : GAM
+            Fitted restricted model.
+
+        Returns
+        -------
+        HypothesisTest
+        """
+        self._check_inference_supported("score_test")
+        self._check_nested(restricted, "score_test")
+        D, _ = self._design_matrix()
+        df = D.shape[1] - restricted.dof()
+        if df <= 1e-8:
+            raise ValueError(
+                "score_test: the restricted model has as many degrees of freedom "
+                "as the full design; nothing to test."
+            )
+        mu_r = restricted._eval_inv_link(restricted._fitted_eta())
+        weight, score = self._glm_irls_terms(self._y, mu_r)
+        if self._weights is not None:
+            w_obs = np.asarray(self._weights, dtype=float)
+            weight = weight * w_obs
+            score = score * w_obs
+        U = D.T @ score
+        info = D.T @ (weight[:, None] * D)
+        stat = (
+            float(U @ linalg.solve(info, U, assume_a="pos")) / restricted.dispersion()
+        )
+        return HypothesisTest(
+            test="score",
+            statistic=stat,
+            df=float(df),
+            p_value=float(stats.chi2.sf(stat, df)),
+            distribution="chi2",
+        )
 
     def confidence_intervals(
         self, X: pd.DataFrame, prediction: bool = False, width: float = 0.95

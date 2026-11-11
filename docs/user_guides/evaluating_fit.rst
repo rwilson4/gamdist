@@ -319,6 +319,65 @@ unmodelled structure, ``mdl3`` does not. In practice, use both: AIC /
 AICc to compare candidate models on a common footing, residual plots
 to check whether any of them is actually adequate.
 
+Coefficient inference and hypothesis tests
+------------------------------------------
+
+For models built from linear and categorical features,
+:meth:`~gamdist.GAM.parameter_summary` reports a coefficient table in
+the ``statsmodels`` / ``patsy`` parametrization: an intercept, one
+column per linear feature, and treatment contrasts (first level
+dropped) for each categorical feature. Standard errors come from the
+inverse Fisher information (``cov_type="nonrobust"``, the default) or
+the sandwich estimator (``cov_type="HC0"`` / ``"HC1"``):
+
+.. code-block:: python
+
+    mdl2.parameter_summary()
+    #                          estimate  std_err        z  p_value  ci_lower  ci_upper
+    # Intercept                  2.2933   0.0252  90.9609      0.0    2.2439    2.3427
+    # sqft                       0.9947   0.0108  91.9086      0.0    0.9735    1.0159
+    # neighborhood[T.midtown]   -0.3190   0.0219 -14.5505      0.0   -0.3620   -0.2761
+    # neighborhood[T.rural]     -0.8831   0.0220 -40.2293      0.0   -0.9261   -0.8401
+    # neighborhood[T.suburbs]   -0.5925   0.0225 -26.3339      0.0   -0.6366   -0.5484
+
+The contrasts are relative to ``downtown`` (true offsets -0.3, -0.9,
+-0.6), and every 95% interval covers its true value.
+
+Three tests address "does this feature matter?":
+
+- :meth:`~gamdist.GAM.wald_test` needs only the larger model. Pass a
+  feature name for the joint test over all its coefficients, a
+  coefficient name, or a restriction matrix ``R`` (with ``value=q``
+  for :math:`R\beta = q`).
+- :meth:`~gamdist.GAM.lr_test` compares two nested fits by their
+  deviance difference: a :math:`\chi^2` test when the dispersion is
+  known, an F test when it is estimated (as here).
+- :meth:`~gamdist.GAM.score_test` needs only the restricted model's fit,
+  evaluated on the larger model's design.
+
+.. code-block:: python
+
+    mdl2.wald_test('neighborhood')  # chi2(3) = 1783
+    mdl2.lr_test(mdl1)              # F(3, 495) = 594
+    mdl2.score_test(mdl1)           # chi2(3) = 390
+
+Each returns a :class:`~gamdist.HypothesisTest` with ``statistic``,
+``df``, ``p_value``, ``distribution`` and (for F tests) ``df_denom``.
+The three tests agree asymptotically under the null. Under a strong
+alternative like this one they can differ a lot. For a Gaussian model
+the Wald statistic is exactly :math:`3F`, since both use the full
+model's :math:`\hat\phi`. The score test is smaller because it
+evaluates the information at the restricted fit, whose residual
+variance is inflated by the omitted neighborhood effect.
+
+:meth:`~gamdist.GAM.lr_test` also accepts spline models. It uses the
+regularization-aware effective degrees of freedom, so
+``mdl3.lr_test(mdl2)`` gives the usual approximate GAM analysis of
+deviance (here :math:`F(4, 491) = 207`). Wald and score tests, like
+the coefficient table, are not yet available for spline features.
+They issue a warning on penalized fits, because standard errors at a
+shrunk estimate do not have nominal coverage.
+
 A few practical notes
 ---------------------
 
