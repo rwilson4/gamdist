@@ -22,12 +22,13 @@ Public API:
 from __future__ import annotations
 
 from .feature import _Feature
-from .gamdist import GAM, fit_adaptive_lasso
+from .gamdist import GAM, HypothesisTest, fit_adaptive_lasso
 from .multi_task_gamdist import MultiTaskGAM
 from .spline_feature import SplineError
 
 __all__ = [
     "GAM",
+    "HypothesisTest",
     "MultiTaskGAM",
     "SplineError",
     "_Feature",
